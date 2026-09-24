@@ -34,21 +34,37 @@ cp .build/release/webkit-cli /usr/local/bin/    # keep the name "webkit-cli", se
 ## Commands
 
 ```
-webkit-cli auth <url>                open a window at <url>; sign in; click Done to save
-webkit-cli open <url>                → {"url","title","status"}
-webkit-cli text <url>                page innerText
-webkit-cli eval <url> '<js>'         JS as an async function body → JSON result
-webkit-cli shot <url> <out.png>      screenshot of the 1280×800 viewport (PNG at 2× on Retina, mode 0600)
-webkit-cli accounts                  list saved profiles (JSON)
-webkit-cli forget <account>          delete a profile and all its website data
-webkit-cli doctor                    check that headless pages really render
+webkit-cli auth <url>                   open a window at <url>; sign in; click Done to save
 
--a, --account <name>  use a separate profile instead of the default; `-` = throwaway, in memory
---wait <sec>          settle time after load (default 3)
---timeout <sec>       give up and exit 3 (default 60; auth has no timeout)
+webkit-cli open <url>                   open a live tab → {"tab","url","title","status","loading"}
+webkit-cli click <tab> <selector>       click; waits for any navigation it starts
+webkit-cli type <tab> <selector> <text> set an input's value (React-safe); the text is never echoed
+webkit-cli wait <tab> [--until-url <regex>] [--until-selector <css>]
+webkit-cli goto <tab> <url>             navigate an open tab
+webkit-cli text <tab|url>               innerText
+webkit-cli eval <tab|url> '<js>'        JS as an async function body → JSON result
+webkit-cli shot <tab|url> <out.png>     1280×800 viewport screenshot (2× on Retina, mode 0600)
+webkit-cli tabs                         open tabs; popups show up as their own tabs
+webkit-cli close <tab>
+webkit-cli stop                         end the profile's session now
+
+webkit-cli accounts                     list saved profiles (JSON)
+webkit-cli forget <account>             delete a profile and all its website data
+webkit-cli doctor                       check that headless pages really render
+
+-a, --account <name>    a separate profile instead of the default; `-` = throwaway (one-shot only)
+--wait <sec>            settle time after a load/click (open/goto/one-shot 3, click 1, others 0)
+--timeout <sec>         give up and exit 3 (default 60, counted from when the command reaches the session)
+--until-url / --until-selector   conditions for `wait`
+--out <file>            write eval/text output to a 0600 file, print only {"written","bytes"}
+--raw                   eval: print a string result without JSON quotes
+--idle <sec>            idle timeout for the session this command starts (default 900)
 ```
 
 - **One shared default profile.** Every command uses the profile named `main` unless you pass `--account`. `main` is created on first use. A named profile is only created by `auth`, so a typo in `--account` fails instead of silently giving you a logged-out profile.
+- **Tabs live between commands.** The first command for a profile starts a background session process for it, reached over a unix socket in `~/.config/webkit-cli/run/` (dir 0700, socket 0600). `open` returns a tab id like `t3f9a2c`, and later commands act on that live tab, so a click that navigates to another site (OAuth) doesn't kill anything. The session exits after `--idle` seconds with no commands (default 15 min) or on `stop`. Commands for one profile run one at a time, in order.
+- **A URL instead of a tab** (`text`, `eval`, `shot`) loads it in a temporary tab, acts, and closes the tab.
+- `<selector>` is CSS, or `text=<words>` to match a visible button, link or option by its text (exact first, then the shortest containing match). When nothing matches, the error lists the visible clickable texts.
 - A URL without a scheme gets `https://`, so `google.com` means `https://google.com`.
 - Exit codes: `0` ok, `1` error, `2` usage, `3` timeout. Errors go to stderr.
 
@@ -66,31 +82,31 @@ webkit-cli auth vercel.com --account work   # a second, separate identity
 ### Then run headless
 
 ```sh
-webkit-cli open https://console.e2b.dev
-webkit-cli text https://railway.com/account/tokens
+webkit-cli text https://railway.com/account/tokens           # one-shot
 webkit-cli eval https://github.com/settings/tokens 'return document.title'
-webkit-cli shot https://vercel.com/dashboard /tmp/vercel.png --account work
-webkit-cli text example.com --account -      # nothing read or saved
+
+tab=$(webkit-cli open https://cloud.browser-use.com/signin | jq -r .tab)
+webkit-cli click $tab 'text=Sign in with Google'             # cross-site redirect: the tab survives
+webkit-cli wait  $tab --until-url '^https://cloud\.browser-use\.com/(?!signin)' --timeout 90
+webkit-cli goto  $tab 'https://cloud.browser-use.com/settings?tab=api-keys'
+webkit-cli eval  $tab --raw --out ~/.config/webkit-cli/secrets/key 'return document.querySelector("code").textContent'
+webkit-cli close $tab
 ```
 
-`eval` runs your code as the body of an async function in the page. `return` gives the output and `await` works. Multi-step flows (click, wait, read) go inside a single `eval`:
+`scripts/browser-use-apikey.sh` is the full version of that flow: Google account chooser, consent, creating the key, and writing it to a 0600 file without ever printing it. `scripts/rehearse-browser-use.sh` runs the same script against a local fake OAuth server (`scripts/fixtures/oauth_server.py`).
+
+`eval` runs your code as the body of an async function in the page. `return` gives the output and `await` works. If the page navigates while the script runs, the script dies. Split steps that change pages into `click` then `wait`. Within one page, `eval` can do several steps:
 
 ```sh
-webkit-cli eval https://railway.com/account/tokens '
+webkit-cli eval $tab '
   const i = document.querySelector("input[name=name]");
-  // React-controlled inputs: use the native setter, then fire input/change
+  // React-controlled inputs: use the native setter, then fire input/change (this is what `type` does)
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(i, "agent-key");
   i.dispatchEvent(new Event("input", {bubbles: true}));
   [...document.querySelectorAll("button")].find(b => b.textContent.trim() === "Create").click();
-  for (let t = 0; t < 20; t++) {
-    await new Promise(r => setTimeout(r, 500));
-    const dialog = document.querySelector("[role=dialog]");
-    if (dialog) return dialog.innerText;
-  }
-  throw new Error("no dialog appeared");'
+  await new Promise(r => setTimeout(r, 1000));
+  return document.querySelector("[role=dialog]")?.innerText'
 ```
-
-For `<select>`, use `HTMLSelectElement.prototype`'s setter and dispatch `change`. To submit a form, call `form.requestSubmit()` or the button's `.click()`.
 
 ## Security
 
@@ -106,9 +122,10 @@ For `<select>`, use `HTMLSelectElement.prototype`'s setter and dispatch `change`
 - **Passkeys**: WebAuthn platform passkeys (iCloud Keychain / Touch ID) **don't work** in this unbundled CLI. `PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()` returns `false`. WKWebView only offers them to apps signed with the restricted `com.apple.developer.web-browser.public-key-credential` entitlement, and that entitlement needs an embedded provisioning profile, which only a signed `.app` bundle can carry. This is how apps like Search.app do it. Workaround for now: at the Google/GitHub prompt, choose password, a phone prompt or a security code instead of a passkey. Wrapping webkit-cli in a signed `.app` would fix this, but WebKit would then key its storage by bundle ID instead of binary name, so existing accounts would need migrating.
 - **No network interception**: you can't read or modify requests or responses. Use `fetch` inside `eval` when you need an API call with the page's cookies.
 - **Synthetic events aren't trusted**: `.click()` and `dispatchEvent` produce `isTrusted: false` events. Most apps accept them. A few (some payment and captcha widgets) don't.
-- **Concurrent commands on one profile** work, and all their persistent cookies are saved, but each process sees only its own changes while it runs. The session-cookie side-car is last-writer-wins.
-- **One process per command**: every command loads the page fresh. A long-lived daemon/session mode (load once, send many steps) is planned for v2. Until then, put multi-step flows inside one `eval`.
-- `eval` and `text` see only the main page. Popups and cross-origin iframes aren't scriptable from the CLI.
+- **One command at a time per profile**: a long `wait` holds up other scripts on the same profile. `--timeout` includes time spent queued. Use `--account` for independent work.
+- **kill -9 of a session**: session-only cookies are saved after every command and on stop/idle exit. A hard kill loses only those a page set after the last command returned. The next command starts a fresh session. Its tabs are gone, and old tab ids never match new ones.
+- **Don't run commands while `auth` is open on the same profile.** `auth` stops that profile's session first, but a command started during sign-in would start a new session that may not see the new login until it restarts (`webkit-cli stop`).
+- Cross-origin iframes aren't scriptable from the CLI. Popups are, as their own tabs.
 
 ## What's verified
 
