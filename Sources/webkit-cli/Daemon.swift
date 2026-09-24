@@ -52,7 +52,7 @@ enum SessionClient {
   private static func exchange(_ fd: Int32, _ req: Request) throws -> Response {
     defer { close(fd) }
     // a human may be working in a shown tab on top of the machine time
-    let human = req.escalate == true ? (req.humanTimeout ?? defaultHumanTimeout) : 0
+    let human = req.escalate == true || req.untilHidden == true ? (req.humanTimeout ?? defaultHumanTimeout) : 0
     var tv = timeval(tv_sec: Int(req.timeout + human) + 15, tv_usec: 0)
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
     var line = try JSONEncoder().encode(req)

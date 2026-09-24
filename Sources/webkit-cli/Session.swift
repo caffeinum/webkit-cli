@@ -187,8 +187,9 @@ final class Engine {
     case "show":
       let (id, tab) = try tab(r.target)
       let reason = r.text ?? "Finish this step, then click Done."
+      let wasShown = tab.isShown
       try tab.show(reason: reason)
-      note("needs you: \(reason) (tab \(id))")
+      if !wasShown { noteNeedsYou(reason, id) }
       return try jsonString(["tab": id, "shown": true] as [String: Any])
     case "hide":
       let (id, tab) = try tab(r.target)
@@ -270,9 +271,27 @@ final class Engine {
       }
     }
     let hasConditions = r.untilURL != nil || r.untilSelector != nil
+    var humanSince: Date?
+    defer { deadline.resume() }
     while true {
+      if tab.isClosed {
+        throw CLIError("tab \(id) closed before \(r.untilHidden == true ? "Done" : "the wait finished") (the page closed itself, `close`, or the session stopped)")
+      }
       // --until-hidden races the url/selector conditions: whichever holds first
       if r.untilHidden == true && !tab.isShown { return }
+      // time a person spends on a shown tab is human time: --human-timeout, not --timeout
+      if r.untilHidden == true && tab.isShown {
+        deadline.pause()
+        let since = humanSince ?? Date()
+        humanSince = since
+        let limit = r.humanTimeout ?? defaultHumanTimeout
+        if Date().timeIntervalSince(since) > limit {
+          throw CLIError("no one clicked Done within \(Int(limit))s (tab \(id)) — raise --human-timeout", code: ExitCode.timeout)
+        }
+      } else {
+        deadline.resume()
+        humanSince = nil
+      }
       try await escalateIfChallenged(id, r, deadline: deadline)
       let idle = !tab.web.isLoading
       let urlOK = try r.untilURL.map { pattern in
@@ -309,7 +328,7 @@ final class Engine {
     guard let (cid, t) = hit else { return }
     let reason = "this page needs a person (\(t.web.url?.host ?? "?")) — finish it in the window; it closes by itself, or click Done"
     try t.show(reason: reason)
-    note("needs you: \(reason) (tab \(cid))")
+    noteNeedsYou(reason, cid)
     deadline.pause()
     defer { deadline.resume() }
     let giveUp = Date().addingTimeInterval(r.humanTimeout ?? defaultHumanTimeout)
@@ -327,6 +346,11 @@ final class Engine {
     }
     if !t.isClosed { t.hide() }
     note("human step done (tab \(cid))")
+  }
+
+  private func noteNeedsYou(_ reason: String, _ id: String) {
+    note("needs you: \(reason) (tab \(id))")
+    if screenIsLocked() { note("the screen is locked — the window will be waiting when you unlock") }
   }
 
   private func isChallenge(_ tab: Browser, _ r: Request) async throws -> Bool {
