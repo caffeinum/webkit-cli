@@ -1,0 +1,19 @@
+scripts/fixtures/human.swift
+  s_155e7025d0bbbb::t_6bdbf2f229f224 89-90,92-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "4e151b2ea3cc4ee45d91587d5087b8ca87ad5dd8",
+  "prompts": {},
+  "sessions": {
+    "s_155e7025d0bbbb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fdaa8217-e451-4f77-9b74-842d646d0473",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
