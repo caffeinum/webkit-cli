@@ -122,7 +122,7 @@ webkit-cli wait  $tab --until-url dashboard --escalate --human-timeout 300
 - `show` puts the tab's own window on screen, with the page state untouched. A bar shows the reason, the live URL and **Done**. Done, ⌘W and the close button all hide it again. None of them close the tab.
 - `--escalate` (on `click`, `wait`, `goto`) watches for challenge pages: Google `signin/challenge` and `speedbump`, GitHub 2FA, a visible reCAPTCHA/hCaptcha/Turnstile, and your own `--challenge-url <regex>`. The tab and any popup it opened are both checked. When one hits, it shows that tab, prints `webkit-cli: needs you: …` to stderr right away, waits until the page is past the challenge (or Done), hides it, and returns normally.
 - Time spent waiting for the person doesn't count toward `--timeout`. `--human-timeout` (default 600s) bounds it, then exit 3.
-- `show`, `hide`, `tabs` and `stop` skip the command queue, so they work while something is waiting on the person. The session never idles out while a tab is shown.
+- `show`, `hide`, `tabs`, `close` and `stop` skip the command queue, so they work while something is waiting on the person. `close` or `stop` on the tab a `wait` is watching makes that wait exit 1 ("closed before Done"). The session never idles out while a tab is shown.
 - `ESCALATE=1 scripts/browser-use-apikey.sh` uses this for Google's "confirm it's you".
 
 ## Security
