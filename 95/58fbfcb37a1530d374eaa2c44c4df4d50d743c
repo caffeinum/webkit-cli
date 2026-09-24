@@ -1,0 +1,25 @@
+README.md
+  s_81ef76b733b16b::t_ae0ff0fa6a3a78 44,59,66-67,85,111-138,144
+Sources/webkit-cli/Snapshot.swift
+  s_81ef76b733b16b::t_0a7fa260b28dc0 241,259,263-267,291-292,327-329,332,335,337,339-340
+scripts/browser-use-apikey.sh
+  s_81ef76b733b16b::t_8b410ce1708ab3 100
+scripts/check.sh
+  s_81ef76b733b16b::t_3b4d9315d63948 19-21,27,29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "9558fbfcb37a1530d374eaa2c44c4df4d50d743c",
+  "prompts": {},
+  "sessions": {
+    "s_81ef76b733b16b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "af2bada9-9bf4-4224-8e84-7eee35c28325",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
