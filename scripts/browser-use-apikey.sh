@@ -33,9 +33,9 @@ text=Create'}
 NAME_INPUTS=${NAME_INPUTS:-'[role=dialog] input[type=text]
 [role=dialog] input:not([type])
 input[placeholder*="name" i]'}
+# only ever inside the dialog: a page-level "Create" here would mint a second key
 CONFIRM_BUTTONS=${CONFIRM_BUTTONS:-'[role=dialog] button[type=submit]
-text=Create key
-text=Create'}
+[role=dialog] button:last-of-type'}
 SIGNED_OUT_RE=${SIGNED_OUT_RE:-'/signin|/signup'}
 APP_ORIGIN_RE=${APP_ORIGIN_RE:-'^https://cloud\.browser-use\.com/'}
 PROVIDER_URL_RE=${PROVIDER_URL_RE:-'^https://accounts\.google\.com/'}
@@ -122,11 +122,15 @@ if ! "$W" eval "$tab" 'return !!document.querySelector("[role=dialog]")' --raw |
   first_of click "$CREATE_BUTTONS" || fail "no create button (tried: $(echo "$CREATE_BUTTONS" | tr '\n' '|'))"
 fi
 
-step="type the key name"
-first_of type "$NAME_INPUTS" "$KEY_NAME" || echo "no name field found — creating without a name" >&2
+if "$W" eval "$tab" 'return !!document.querySelector("[role=dialog]")' --raw | grep -q true; then
+  step="type the key name"
+  first_of type "$NAME_INPUTS" "$KEY_NAME" || echo "no name field found — creating without a name" >&2
 
-step="confirm"
-first_of click "$CONFIRM_BUTTONS" || fail "no confirm button (tried: $(echo "$CONFIRM_BUTTONS" | tr '\n' '|'))"
+  step="confirm"
+  first_of click "$CONFIRM_BUTTONS" || fail "no confirm button in the dialog (tried: $(echo "$CONFIRM_BUTTONS" | tr '\n' '|'))"
+else
+  echo "no dialog after create — the button created the key directly" >&2
+fi
 key_made=1
 
 step="read the new key into $KEY_FILE"

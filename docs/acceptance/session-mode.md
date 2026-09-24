@@ -62,7 +62,7 @@ Dev ships `scripts/browser-use-apikey.sh` that:
 
 ## sign-off
 
-- [ ] A1–A14 green (QA, logs on beads-r293)
-- [ ] README updated: session commands, idle, known gaps (kill -9 cookie loss if any, popup behaviour)
+- [x] A1–A14 green (QA, session-mode 21b71d2, logs on beads-r293)
+- [x] README updated: session commands, idle, known gaps (kill -9 cookie loss if any, popup behaviour)
 - [ ] B run by personal: pass
 - [ ] webkit-pm signs off on beads-r293

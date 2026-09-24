@@ -98,6 +98,9 @@ func run(_ command: Command, _ opts: Options) async throws {
     _ = try SessionClient.stopIfRunning(account: account)
     try await removeDataStore(id)
     try? FileManager.default.removeItem(at: Accounts.sessionFile(for: id))
+    for leftover in [SessionPaths.lock(account), SessionPaths.log(account), SessionPaths.socket(account)] {
+      try? FileManager.default.removeItem(atPath: leftover)
+    }
     try accounts.remove(account)
     print(try jsonString(["forgot": account, "id": id.uuidString]))
   case .doctor:
