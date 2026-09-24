@@ -3,12 +3,14 @@
 //
 // usage: swift scripts/fixtures/human.swift <pid> <command> [args]
 //   window [--timeout s]     wait for an on-screen window, print {title,frame,main,focused}
-//   type <dom-id> <text>     click the element with that DOM id in the window, then type keystrokes
+//   type <dom-id> <text>     focus the element with that DOM id via AX, then send keystrokes to the pid
 //   press <dom-id|title>     AXPress a web element (DOM id) or a native button (title), e.g. `press Done`
-//   click <dom-id|title>     real mouse click at the element's centre (window must be frontmost)
-//   cmdw                     send ⌘W via the HID tap, only if the process is frontmost
+//   click <dom-id|title>     real mouse click; refuses unless the pid is frontmost and the window is key
+//   cmdw                     AXPress the app's own ⌘W menu item (File/Window › Close)
 //   close                    press the window's close (red) button
 //   watch <seconds>          poll every 0.5s; exit 1 if the process ever has an on-screen window
+// No global events: keystrokes go to the pid only, presses go through AX. The one global event
+// (`click`) is guarded so it can never land in another app.
 // Exit: 0 ok, 1 not found / window seen (watch), 2 usage.
 import AppKit
 import ApplicationServices
@@ -89,9 +91,9 @@ func element(_ key: String, in window: AXUIElement) -> AXUIElement {
 // mouse events go through the HID tap to whatever is under the cursor, so only click while the
 // target process is frontmost — a click must never land in the person's own app
 func mouseClick(_ el: AXUIElement) {
-  guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
-    fail("pid \(pid) is not frontmost; not clicking (the person may be using another app)")
-  }
+  let front = NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+  let key = (attr(requireWindow(), kAXMainAttribute) as Bool?) == true && (attr(requireWindow(), kAXFocusedAttribute) as Bool?) == true
+  guard front, key else { fail("pid \(pid) not frontmost with a key window; not clicking (the person may be using another app)") }
   guard let f = frame(el) else { fail("element has no frame") }
   let pt = CGPoint(x: f.midX, y: f.midY)
   for type in [CGEventType.leftMouseDown, .leftMouseUp] {
@@ -121,11 +123,6 @@ func pressOrFail(_ el: AXUIElement, _ name: String) {
   }
 }
 
-func activate() {
-  NSRunningApplication(processIdentifier: pid)?.activate()
-  usleep(300_000)
-}
-
 switch command {
 case "window":
   let timeout = rest.count == 2 && rest[0] == "--timeout" ? Double(rest[1]) ?? 10 : 10
@@ -148,9 +145,9 @@ case "type":
   guard rest.count == 2 else { fail("usage: type <dom-id> <text>", 2) }
   let w = requireWindow()
   let el = element(rest[0], in: w)
-  activate()
-  AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-  mouseClick(el)
+  guard AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success,
+        (attr(el, kAXFocusedAttribute) as Bool?) == true
+  else { fail("could not focus '\(rest[0])' via AX") }
   for ch in rest[1] { key(0, text: String(ch)) }
   // AXValue can lag the keystrokes (React re-render), so poll briefly
   var value = ""
@@ -167,22 +164,19 @@ case "press":
 case "click":
   guard rest.count == 1 else { fail("usage: click <dom-id|title>", 2) }
   let el = element(rest[0], in: requireWindow())
-  activate()
   mouseClick(el)
   print("clicked \(rest[0])")
 case "cmdw":
-  // menu key equivalents only fire for events from the HID tap, not postToPid; guard so a stray ⌘W
-  // can never land in another app
   _ = requireWindow()
-  activate()
-  guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { fail("pid \(pid) is not frontmost; not sending ⌘W") }
-  for down in [true, false] {
-    let e = CGEvent(keyboardEventSource: nil, virtualKey: 13, keyDown: down)!  // kVK_ANSI_W
-    e.flags = .maskCommand
-    e.post(tap: .cghidEventTap)
-    usleep(30_000)
+  let menuBar: AXUIElement? = attr(app, kAXMenuBarAttribute)
+  let item = menuBar.flatMap { bar in
+    find(bar) { el in
+      (attr(el, kAXMenuItemCmdCharAttribute) as String?) == "W"
+        && ((attr(el, kAXMenuItemCmdModifiersAttribute) as NSNumber?)?.intValue ?? -1) == 0  // 0 = ⌘ only
+    }
   }
-  print("sent ⌘W (HID, pid frontmost)")
+  guard let item else { fail("no ⌘W menu item in pid \(pid)'s menu bar") }
+  pressOrFail(item, "⌘W menu item '\((attr(item, kAXTitleAttribute) as String?) ?? "")'")
 case "close":
   let w = requireWindow()
   guard let b: AXUIElement = attr(w, kAXCloseButtonAttribute) else { fail("window has no close button") }
