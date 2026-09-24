@@ -33,6 +33,11 @@ func hasGUISession() -> Bool {
   return session[kCGSessionOnConsoleKey as String] as? Bool ?? false
 }
 
+func screenIsLocked() -> Bool {
+  let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+  return session?["CGSSessionScreenIsLocked"] as? Bool ?? false
+}
+
 /// One web view in its own window — a tab. Headless tabs live off-screen; `auth` uses a visible one.
 @MainActor
 final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDelegate {
@@ -109,6 +114,9 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
   /// True while this headless tab is on screen for a person (show/--escalate).
   private(set) var isShown = false
   private var shownBar: (NSTitlebarAccessoryViewController, AuthBar)?
+  /// How many tabs are on screen, and which app had the keyboard before the first one appeared.
+  private static var shownCount = 0
+  private static var previousApp: NSRunningApplication?
 
   /// Brings this tab's own window on screen — the same window and web view, so the page keeps its state,
   /// process and JS — with a bar saying what to do and a Done button. Done, ⌘W and the close button hide it.
@@ -133,8 +141,18 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
       shownBar = (accessory, bar)
       window.setContentSize(viewport)
       window.center()
+      // cascade, so a second shown tab doesn't sit exactly on the first
+      let offset = CGFloat(Browser.shownCount) * 30
+      window.setFrameOrigin(NSPoint(x: window.frame.origin.x + offset, y: window.frame.origin.y - offset))
     }
-    isShown = true
+    if !isShown {
+      if Browser.shownCount == 0 {
+        let front = NSWorkspace.shared.frontmostApplication
+        Browser.previousApp = front?.processIdentifier == getpid() ? nil : front
+      }
+      Browser.shownCount += 1
+      isShown = true
+    }
     NSApp.activate(ignoringOtherApps: true)
     window.makeKeyAndOrderFront(nil)
   }
@@ -143,6 +161,14 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
   func hide() {
     guard isShown else { return }
     isShown = false
+    Browser.shownCount -= 1
+    defer {
+      // give the keyboard back to whatever the person was using before we popped up
+      if Browser.shownCount == 0 {
+        if let previous = Browser.previousApp, !previous.isTerminated { previous.activate() } else { NSApp.hide(nil) }
+        Browser.previousApp = nil
+      }
+    }
     if let (accessory, _) = shownBar, let i = window.titlebarAccessoryViewControllers.firstIndex(of: accessory) {
       window.removeTitlebarAccessoryViewController(at: i)
     }
@@ -161,7 +187,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
 
   func close() {
     isClosed = true
-    isShown = false
+    hide()
     failRunningJS(CLIError("tab was closed while the script ran"))
     ownedPopups.forEach { $0.close() }
     ownedPopups = []

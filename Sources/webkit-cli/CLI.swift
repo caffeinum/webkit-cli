@@ -61,8 +61,9 @@ let helpText = """
     --until-selector <css>  `wait` until an element matching <css> exists
     --idle <sec>            idle timeout for a session this command starts (default 900)
     --challenge-url <regex> with --escalate: also treat matching URLs as challenges (repeatable)
-    --human-timeout <sec>   with --escalate: how long to wait for the person (default 600, exit 3
-                            after); time spent waiting for a person doesn't count toward --timeout
+    --human-timeout <sec>   with --escalate or wait --until-hidden: how long to wait for the person
+                            (default 600, then exit 3); time a tab is shown for a person doesn't
+                            count toward --timeout
     --out <file>            write `eval`/`text` output to <file> (mode 0600) instead of stdout,
                             and print only {"written","bytes"} — for API keys and other secrets
     --raw                   `eval`: when the result is a string, output it without JSON quotes
@@ -193,7 +194,9 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
     guard ["click", "wait", "goto"].contains(verb) else {
       throw CLIError("--escalate/--challenge-url/--human-timeout work with click, wait and goto on a tab", code: ExitCode.usage)
     }
-    guard opts.escalate else { throw CLIError("--challenge-url/--human-timeout need --escalate", code: ExitCode.usage) }
+    guard opts.escalate || (opts.humanTimeout != nil && opts.untilHidden && opts.challengeURLs.isEmpty) else {
+      throw CLIError("--challenge-url needs --escalate; --human-timeout needs --escalate or wait --until-hidden", code: ExitCode.usage)
+    }
   }
 
   switch verb {
