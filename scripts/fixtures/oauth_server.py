@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Fake OAuth fixture for session-mode QA (docs/acceptance/session-mode.md, part A).
+"""Fake OAuth fixture for session-mode and escalate QA (docs/acceptance/session-mode.md, escalate.md).
 
 Two origins on 127.0.0.1: app (default :8765) and idp (default :8766).
 Usage: scripts/fixtures/oauth_server.py [app_port] [idp_port]
+?challenge=1 on /signin or /signin-popup makes the idp insert a fake "confirm it's you" step
+(idp /challenge: #code + Continue) between login and callback.
 Request log (method, path, cookie *names* only) → stderr.
 """
 import http.server, json, secrets, sys, threading, time, urllib.parse as up, urllib.request, os
@@ -17,7 +19,7 @@ REACT = {
 }
 CACHE = os.path.join(os.environ.get("TMPDIR", "/tmp"), "webkit-cli-fixture-react")
 
-codes, sessions, lock = {}, {}, threading.Lock()
+codes, sessions, pending, lock = {}, {}, {}, threading.Lock()
 
 
 def page(title, body):
@@ -82,18 +84,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def app_route(self, path, q):
         if path == "/":
             links = " · ".join(f'<a href="{p}">{p}</a>' for p in (
-                "/signin", "/signin-popup", "/dashboard", "/slow-link", "/late", "/jsredirect",
+                "/signin", "/signin-popup", "/signin?challenge=1", "/signin-popup?challenge=1", "/dashboard", "/slow-link", "/late", "/jsredirect",
                 "/selectors", "/react", "/set-persistent", "/whoami"))
             return self.send(200, page("QA App", f"<h1>QA App</h1><p>{links}</p>"))
 
         if path == "/signin":
-            return self.send(200, page("Sign in", """<h1>Sign in</h1>
-<a id=idp href="/oauth/start"><button>Continue with IdP</button></a>"""))
+            return self.send(200, page("Sign in", f"""<h1>Sign in</h1>
+<a id=idp href="/oauth/start{challenge_qs(q, '?')}"><button>Continue with IdP</button></a>"""))
         if path == "/oauth/start":
-            return self.redirect("/oauth/start2?state=" + secrets.token_hex(4))
+            return self.redirect(f"/oauth/start2?state={secrets.token_hex(4)}{challenge_qs(q)}")
         if path == "/oauth/start2":
             ret = up.quote(APP + "/callback", safe="")
-            return self.redirect(f"{IDP}/login?client_id=qa&redirect_uri={ret}&state={q.get('state', '')}")
+            return self.redirect(f"{IDP}/login?client_id=qa&redirect_uri={ret}&state={q.get('state', '')}{challenge_qs(q)}")
 
         if path in ("/callback", "/callback-popup"):
             with lock:
@@ -129,7 +131,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/signin-popup":
             ret = up.quote(APP + "/callback-popup", safe="")
             return self.send(200, page("Sign in (popup)", f"""<h1>Sign in (popup)</h1>
-<button id=signin onclick="window.open('{IDP}/login?mode=popup&client_id=qa&redirect_uri={ret}','idp','width=500,height=600')">Sign in</button>
+<button id=signin onclick="window.open('{IDP}/login?mode=popup&client_id=qa&redirect_uri={ret}{challenge_qs(q)}','idp','width=500,height=600')">Sign in</button>
 <p id=status>waiting</p>
 <script>
 window.addEventListener('message', async e => {{
@@ -201,18 +203,46 @@ ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(
             user = q.get("user", "").strip()
             if not user:
                 return self.send(400, page("IdP error", "<h1>username required</h1>"))
-            code = secrets.token_hex(8)
+            if q.get("challenge") == "1":
+                token = secrets.token_hex(8)
+                with lock:
+                    pending[token] = {**q, "user": user}
+                return self.send(303, "", headers=[("Location", f"/challenge?t={token}")])
+            return self.finish_authorize(q, user)
+        # fake "confirm it's you" — deliberately matches none of webkit-cli's built-in Google/captcha patterns
+        if path == "/challenge":
             with lock:
-                codes[code] = user
-            if q.get("mode") == "popup":
-                return self.send(200, page("Signing in", f"""<h1>signing in…</h1>
+                held = pending.get(q.get("t", ""))
+            if not held:
+                return self.send(400, page("IdP error", "<h1>unknown challenge</h1>"))
+            code = q.get("code", "").strip() if self.command == "POST" else ""
+            if not code:
+                error = "<p id=error>enter the code</p>" if self.command == "POST" else ""
+                return self.send(200, page("Confirm it's you", f"""<h1>Confirm it's you</h1>
+<p>Enter the code we sent to your device.</p>{error}
+<form method=post action="/challenge"><input type=hidden name=t value="{q['t']}">
+<input id=code name=code autocomplete=off placeholder=code>
+<button id=continue type=submit>Continue</button></form>"""))
+            with lock:
+                pending.pop(q["t"], None)
+            return self.finish_authorize(held, held["user"])
+        return self.send(404, page("404", "<h1>404</h1>"))
+
+    def finish_authorize(self, q, user):
+        code = secrets.token_hex(8)
+        with lock:
+            codes[code] = user
+        if q.get("mode") == "popup":
+            return self.send(200, page("Signing in", f"""<h1>signing in…</h1>
 <script>window.opener.postMessage({{code: '{code}'}}, '{APP}'); setTimeout(() => window.close(), 300)</script>"""))
         ru = q["redirect_uri"]
         sep = "&" if "?" in ru else "?"
         # 303 so the POST becomes a GET on the app side
         self.send(303, "", headers=[("Location", f"{ru}{sep}code={code}&state={q.get('state', '')}")])
-            return
-        return self.send(404, page("404", "<h1>404</h1>"))
+
+
+def challenge_qs(q, lead="&"):
+    return f"{lead}challenge=1" if q.get("challenge") == "1" else ""
 
 
 def serve(role, port):
