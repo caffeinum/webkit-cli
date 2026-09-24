@@ -40,6 +40,7 @@ https://cloud.browser-use.com/settings?tab=api-keys
   - numbers are **never reused within a tab**, not even after a navigation. So an old ref can never point at a different element.
   - `wait --until-selector <ref>` with a stale ref fails fast with the same stale message (exit 1). It doesn't wait for the timeout.
   - a ref whose element is gone (removed, or the page navigated) → exit 1, `stale ref e7: page changed since the snapshot — take a new one`. Never a click on anything else.
+  - **only what a person could reach** (SNAP-5, pm 2026-09-23): `click`/`type` (by ref, CSS or `text=`) refuse elements that are `inert`, inside an inert subtree, behind an open modal (`<dialog>` via showModal / `[aria-modal=true]`), or disabled. They exit 1 with the reason (`e12 is behind an open modal dialog`). While a modal is open, `snapshot` lists the dialog block and replaces the rest with one line: `[N elements behind the modal dialog]`.
   - `click <ref>` scrolls the element into view first. `type <ref>` on a `select` picks by option label, then by value. `click` on a checkbox toggles it.
 - **what's included**: headings, landmarks, readable text (collapsed whitespace), and interactive elements (a, button, input, textarea, select, `[role=button|link|tab|menuitem|checkbox|radio|switch|combobox|option]`, `[contenteditable]`, `[onclick]`/`cursor:pointer` only if cheap). Each gets its accessible name (aria-labelledby → aria-label → `<label>` → text → alt → title → placeholder) and its state: disabled, checked, expanded, selected, required, value.
   - **visible only**: skips `display:none`, `visibility:hidden`, zero size, `aria-hidden`, `inert`. Elements scrolled out of view are still included.
@@ -70,6 +71,7 @@ Fixture page `/snapshot` on the local server, containing: nav + headings, a hidd
 | S9 | **speed** | on an already-loaded tab (time only the `snapshot` call, not `open`), the fixture page takes < 500 ms and a real public page (e.g. github.com/login) < 1.5 s. |
 | S10 | **regressions + `text` removal** | session-mode A1–A14 and escalate E1–E12 still green, with `text` steps swapped for `snapshot`. `text <tab>` and `text <url>` → exit 2 with the migration message. `rg -w 'text' --glob '!docs/acceptance/**'` over scripts/README/help finds no remaining calls to the command. `check.sh` passes. |
 | S11 | **public site** | on a public page with a real form (e.g. github.com/login, no submit): snapshot lists the username/password inputs and the sign-in button with sensible names. `type` a fake value into the username ref → a snapshot shows that value. Nothing gets submitted. |
+| S12 | **unreachable elements** | with the modal open: a background ref, `text=Victim button` and a CSS selector for a background button → all exit 1 with a "behind an open modal" message, and the fixture's `/hit/log` registers nothing. The fixture's inert button and a disabled button → exit 1, nothing registered. Snapshot with the modal open shows the dialog + the `[N elements behind…]` line and no background refs. Close the modal → the background refs are usable again (same numbers). |
 
 ## part B — real (personal)
 
@@ -79,7 +81,7 @@ Fixture page `/snapshot` on the local server, containing: nav + headings, a hidd
 
 ## sign-off
 
-- [ ] S1–S11 green (QA)
+- [ ] S1–S12 green (QA)
 - [ ] README: snapshot, the ref rules, `--redact`, the JSON schema, and a Security note that snapshot prints secrets as they are; `text` removed everywhere
 - [ ] B1 + B2 by personal
 - [ ] webkit-pm signs off
