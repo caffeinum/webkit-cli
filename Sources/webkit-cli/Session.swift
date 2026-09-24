@@ -296,7 +296,7 @@ private let clickJS = findJS + """
       el.dispatchEvent(type.startsWith('pointer') ? new PointerEvent(type, {...at, pointerType: 'mouse', isPrimary: true}) : new MouseEvent(type, at));
     el.click();
   }, 0);
-  return {tag: el.tagName.toLowerCase(), text: label(el).slice(0, 80)};
+  return {tag: el.tagName.toLowerCase(), text: (el.innerText || el.value || el.getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim().slice(0, 80)};
   """
 
 private let typeJS = findJS + """

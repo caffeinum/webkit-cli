@@ -236,7 +236,9 @@ final class SessionServer {
   }
 
   private func scheduleIdleCheck() {
-    DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+    // check often enough that the session exits within ~10% of --idle (at most 5s late)
+    let every = min(5, max(0.5, idle / 10))
+    DispatchQueue.main.asyncAfter(deadline: .now() + every) { [weak self] in
       MainActor.assumeIsolated {
         guard let self else { return }
         if self.active == 0 && Date().timeIntervalSince(self.lastActivity) > self.idle {

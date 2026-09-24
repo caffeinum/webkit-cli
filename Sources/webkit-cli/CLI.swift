@@ -17,7 +17,7 @@ let helpText = """
     webkit-cli goto <tab> <url>             navigate an open tab
     webkit-cli text <tab>                   innerText
     webkit-cli eval <tab> '<js>'            run JS as an async function body, print the JSON result
-    webkit-cli shot <tab> <out.png>         1280x800 screenshot (file mode 0600)
+    webkit-cli shot <tab> <out.png>         1280x800 viewport screenshot (PNG at 2x on Retina, mode 0600)
     webkit-cli tabs                         list open tabs (popups appear as their own tabs)
     webkit-cli close <tab>
     webkit-cli stop                         end the profile's session now (saves cookies)
@@ -157,6 +157,11 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
   func tabID(_ s: String) throws -> String {
     guard isTabID(s) else { throw CLIError("expected a tab id like t3f9a2c (from `webkit-cli open <url>`), got '\(s)'", code: ExitCode.usage) }
     return s
+  }
+
+  let tabCommands: Set = ["open", "goto", "tabs", "click", "type", "wait", "close", "stop"]
+  if account == "-" && tabCommands.contains(verb) {
+    throw CLIError("--account - is one-shot only (text/eval/shot <url>); \(verb) needs a saved profile's session", code: ExitCode.usage)
   }
 
   switch verb {

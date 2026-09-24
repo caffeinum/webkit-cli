@@ -55,7 +55,7 @@ fail() {
   [ -n "$tab" ] && "$W" close "$tab" >/dev/null 2>&1
   exit 1
 }
-url() { "$W" eval "$tab" 'return location.href' --raw; }
+url() { "$W" eval "${1:-$tab}" 'return location.href' --raw; }
 # first selector (one per line in $2) that `$1` accepts; the rest of the args follow the selector
 first_of() {
   cmd=$1; list=$2; shift 2
@@ -77,25 +77,31 @@ if url | grep -Eq "$SIGNED_OUT_RE"; then
   step="finish Google sign-in"
   i=0
   while :; do
-    i=$((i + 1)); [ $i -le 8 ] || fail "still not back on browser-use after 8 Google steps (at $(url))"
-    "$W" wait "$tab" --timeout 30 >/dev/null || fail "page did not finish loading"
-    here=$(url)
-    if echo "$here" | grep -Eq "$APP_ORIGIN_RE" && ! echo "$here" | grep -Eq "$SIGNED_OUT_RE"; then
+    i=$((i + 1)); [ $i -le 10 ] || fail "still not back on browser-use after 10 sign-in steps (at $(url))"
+    # the provider may run in a popup (window.open): it shows up as a tab whose opener is ours
+    popup=$("$W" tabs | grep -o "{[^}]*\"opener\":\"$tab\"[^}]*}" | sed -E 's/.*"tab":"([^"]+)".*/\1/' | head -1)
+    cur=${popup:-$tab}
+    if ! "$W" wait "$cur" --timeout 30 >/dev/null 2>&1; then
+      [ -n "$popup" ] && continue # the popup finished and closed itself meanwhile
+      fail "page did not finish loading"
+    fi
+    here=$(url "$tab")
+    if [ -z "$popup" ] && echo "$here" | grep -Eq "$APP_ORIGIN_RE" && ! echo "$here" | grep -Eq "$SIGNED_OUT_RE"; then
       break
     fi
-    if echo "$here" | grep -Eq "$PROVIDER_URL_RE"; then
-        page=$("$W" text "$tab")
+    if url "$cur" 2>/dev/null | grep -Eq "$PROVIDER_URL_RE"; then
+        page=$("$W" text "$cur")
         if echo "$page" | grep -Eqi "verify it.s you|enter your password|passkey|2-step|use your phone"; then
           fail "Google wants you to re-verify — run: webkit-cli auth google.com (sign in, click Done), then re-run this script"
         fi
         # rehearsal hook: a fake provider that asks for a username (never used for Google)
         if [ -n "${PROVIDER_TYPE_SELECTOR:-}" ]; then
-          "$W" type "$tab" "$PROVIDER_TYPE_SELECTOR" "$PROVIDER_TYPE_TEXT" >/dev/null 2>&1 || true
+          "$W" type "$cur" "$PROVIDER_TYPE_SELECTOR" "$PROVIDER_TYPE_TEXT" >/dev/null 2>&1 || true
         fi
-        if [ -n "${GOOGLE_EMAIL:-}" ] && "$W" click "$tab" "[data-identifier=\"$GOOGLE_EMAIL\"]" >/dev/null 2>&1; then continue; fi
-        if "$W" click "$tab" "$CHOOSER" >/dev/null 2>&1; then continue; fi
-        if "$W" click "$tab" 'text=Continue' >/dev/null 2>&1; then continue; fi
-        if "$W" click "$tab" 'text=Allow' >/dev/null 2>&1; then continue; fi
+        if [ -n "${GOOGLE_EMAIL:-}" ] && "$W" click "$cur" "[data-identifier=\"$GOOGLE_EMAIL\"]" >/dev/null 2>&1; then continue; fi
+        if "$W" click "$cur" "$CHOOSER" >/dev/null 2>&1; then continue; fi
+        if "$W" click "$cur" 'text=Continue' >/dev/null 2>&1; then continue; fi
+        if "$W" click "$cur" 'text=Allow' >/dev/null 2>&1; then continue; fi
         fail "Google shows a page this script doesn't know how to get past — if it asks you to sign in, run: webkit-cli auth google.com"
     fi
     sleep 2

@@ -92,7 +92,10 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     return w
   }
 
+  private(set) var isClosed = false
+
   func close() {
+    isClosed = true
     failRunningJS(CLIError("tab was closed while the script ran"))
     ownedPopups.forEach { $0.close() }
     ownedPopups = []
@@ -230,7 +233,9 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
   private var runningJS: [UUID: CheckedContinuation<Any?, Error>] = [:]
 
   func callJS(_ body: String, _ args: [String: Any] = [:]) async throws -> Any? {
-    try await withCheckedThrowingContinuation { (c: CheckedContinuation<Any?, Error>) in
+    // a closed web view may never call back
+    guard !isClosed else { throw CLIError("tab was closed (the page closed itself, or `close`)") }
+    return try await withCheckedThrowingContinuation { (c: CheckedContinuation<Any?, Error>) in
       let id = UUID()
       runningJS[id] = c
       web.callAsyncJavaScript(body, arguments: args, in: nil, in: .page) { [weak self] result in
@@ -240,7 +245,8 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
           c.resume(returning: value is NSNull ? nil : value)
         case .failure(let error as NSError):
           if let msg = error.userInfo["WKJavaScriptExceptionMessage"] as? String {
-            c.resume(throwing: CLIError("javascript error: \(msg)"))
+            let plain = msg.hasPrefix("Error: ") ? String(msg.dropFirst(7)) : msg
+            c.resume(throwing: CLIError("javascript error: \(plain)"))
           } else if error.localizedDescription.contains("no longer reachable") {
             c.resume(throwing: Browser.navigatedAway)
           } else {
