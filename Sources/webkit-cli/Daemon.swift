@@ -55,8 +55,9 @@ enum SessionClient {
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
     var line = try JSONEncoder().encode(req)
     line.append(0x0A)
+    // no shutdown(SHUT_WR): the session reads one line, and a half-closed socket would look like a
+    // client that hung up (POLLHUP), which is how it spots Ctrl-C'd callers still in the queue
     try writeAll(fd, line)
-    shutdown(fd, SHUT_WR)
     let data = try readAll(fd)
     guard !data.isEmpty else { throw CLIError("session process closed the connection without answering (crashed? see its log)") }
     do {
@@ -139,6 +140,8 @@ final class SessionServer {
   }
 
   func start() throws {
+    // a client that gives up (Ctrl-C) must never take the session down with SIGPIPE on our reply
+    signal(SIGPIPE, SIG_IGN)
     let path = SessionPaths.socket(account)
     unlink(path)
     listenFD = try listenUnix(path)
@@ -153,6 +156,8 @@ final class SessionServer {
           close(client)
           continue
         }
+        var on: Int32 = 1
+        setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
         let data = (try? readLine(client)) ?? Data()
         Task { @MainActor [weak self] in self?.enqueue(client, data) }
       }
@@ -167,42 +172,54 @@ final class SessionServer {
   private func enqueue(_ fd: Int32, _ data: Data) {
     active += 1
     lastActivity = Date()
+    let call = Call(fd: fd, data: data)
+    if let req = call.request, req.cmd != "stop" {
+      // --timeout counts from arrival: a request still queued when it runs out is answered and dropped
+      DispatchQueue.main.asyncAfter(deadline: .now() + req.timeout) {
+        MainActor.assumeIsolated {
+          guard !call.started else { return }
+          call.answer(Response(ok: false, error: """
+            \(req.cmd) timed out after \(Int(req.timeout.rounded(.up)))s queued behind another command on this profile \
+            (one command runs at a time) — raise --timeout, or use a separate --account
+            """, code: ExitCode.timeout))
+        }
+      }
+    }
     let previous = queue
-    let arrived = Date()
     queue = Task { @MainActor in
       await previous?.value
-      await self.serve(fd, data, arrived: arrived)
+      await self.serve(call)
+      self.active -= 1
+      self.lastActivity = Date()
     }
   }
 
-  private func serve(_ fd: Int32, _ data: Data, arrived: Date) async {
-    lastActivity = Date()
-    var stopAfter = false
+  private func serve(_ call: Call) async {
+    call.started = true
+    guard !call.answered else { return }
+    guard !call.clientGone else {
+      log("dropped a queued \(call.request?.cmd ?? "request"): its client disconnected")
+      call.answer(nil)
+      return
+    }
+    guard let req = call.request else {
+      call.answer(Response(ok: false, error: "unreadable request: \(call.decodeError ?? "?")", code: ExitCode.usage))
+      return
+    }
+    if req.cmd == "stop" {
+      call.answer(Response(ok: true, output: try? jsonString(["stopped": account])))
+      await shutdown("stop requested")
+      return
+    }
     let resp: Response
-    var request: Request?
     do {
-      let req = try JSONDecoder().decode(Request.self, from: data)
-      request = req
-      if req.cmd == "stop" {
-        stopAfter = true
-        resp = Response(ok: true, output: try jsonString(["stopped": account]))
-      } else {
-        // --timeout counts from arrival, so time spent queued behind another request is included
-        let queued = Date().timeIntervalSince(arrived)
-        guard queued < req.timeout else {
-          throw CLIError("""
-            \(req.cmd) timed out after \(Int(req.timeout))s queued behind another request on this profile \
-            (one command runs at a time) — raise --timeout or wait for the other command
-            """, code: ExitCode.timeout)
-        }
-        var inTime = req
-        inTime.timeout = req.timeout - queued
-        let output = try await withTimeout(inTime.timeout, cmd: req.cmd) { try await self.engine.handle(inTime) }
-        resp = Response(ok: true, output: output, notes: engine.notes.isEmpty ? nil : engine.notes)
-      }
+      var inTime = req
+      inTime.timeout = req.timeout - Date().timeIntervalSince(call.arrived)
+      let output = try await withTimeout(inTime.timeout, cmd: req.cmd) { try await self.engine.handle(inTime) }
+      resp = Response(ok: true, output: output, notes: engine.notes.isEmpty ? nil : engine.notes)
     } catch let e as CLIError {
       var message = e.message
-      if e.code == ExitCode.timeout, let target = request?.target, let url = engine.location(of: target), !message.contains(url) {
+      if e.code == ExitCode.timeout, let target = req.target, let url = engine.location(of: target), !message.contains(url) {
         message += " — \(target) is at \(url)"
       }
       resp = Response(ok: false, error: message, code: e.code)
@@ -210,14 +227,7 @@ final class SessionServer {
       resp = Response(ok: false, error: "\(error)", code: ExitCode.failure)
     }
     do { try await engine.profile.close() } catch { log("could not save session cookies: \(error)") }
-    let out = (try? JSONEncoder().encode(resp)) ?? Data()
-    DispatchQueue.global().async {
-      try? writeAll(fd, out)
-      close(fd)
-    }
-    active -= 1
-    lastActivity = Date()
-    if stopAfter { await shutdown("stop requested") }
+    call.answer(resp)
   }
 
   private func scheduleIdleCheck() {
@@ -245,6 +255,47 @@ final class SessionServer {
 
   private func log(_ s: String) {
     printErr("[\(ISO8601DateFormatter().string(from: Date()))] \(s)")
+  }
+}
+
+/// One client connection and its request, answered exactly once.
+@MainActor
+private final class Call {
+  let fd: Int32
+  let arrived = Date()
+  let request: Request?
+  let decodeError: String?
+  var started = false
+  private(set) var answered = false
+
+  init(fd: Int32, data: Data) {
+    self.fd = fd
+    do {
+      request = try JSONDecoder().decode(Request.self, from: data)
+      decodeError = nil
+    } catch {
+      request = nil
+      decodeError = "\(error)"
+    }
+  }
+
+  /// The client closed its end (Ctrl-C, killed, gave up).
+  var clientGone: Bool {
+    var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+    guard poll(&p, 1, 0) > 0 else { return false }
+    return p.revents & Int16(POLLHUP) != 0
+  }
+
+  /// Sends `resp` (nil = just hang up) and closes the connection. Later answers are ignored.
+  func answer(_ resp: Response?) {
+    guard !answered else { return }
+    answered = true
+    let fd = fd
+    let out = resp.flatMap { try? JSONEncoder().encode($0) }
+    DispatchQueue.global().async {
+      if let out { try? writeAll(fd, out) }
+      close(fd)
+    }
   }
 }
 
@@ -291,6 +342,8 @@ private func connect(_ path: String) throws -> Int32 {
   let rc = withUnsafePointer(to: &addr) {
     $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
   }
+  var on: Int32 = 1
+  setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
   guard rc == 0 else {
     close(fd)
     throw CLIError("connect(\(path)): \(String(cString: strerror(errno)))")
