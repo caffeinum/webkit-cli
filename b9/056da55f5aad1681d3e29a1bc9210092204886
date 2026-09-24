@@ -1,0 +1,29 @@
+Sources/webkit-cli/Browser.swift
+  s_81ef76b733b16b::t_8ebc4f45cf76aa 36-40,119-121,146-156,166-173,192
+Sources/webkit-cli/CLI.swift
+  s_81ef76b733b16b::t_55b2f8d9b30231 67-69,217-219
+Sources/webkit-cli/Daemon.swift
+  s_81ef76b733b16b::t_e38cfa9ace9cde 55
+Sources/webkit-cli/Session.swift
+  s_81ef76b733b16b::t_f5f19928c6a46e 190,192,274-275,277-279,282-294,331,351-355
+docs/acceptance/escalate.md
+  s_81ef76b733b16b::t_637c8a14b2a31f 20,36,42
+scripts/fixtures/oauth_server.py
+  s_81ef76b733b16b::t_68d1ea865bb691 25-40,209-224,244-245,278-336
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "b9056da55f5aad1681d3e29a1bc9210092204886",
+  "prompts": {},
+  "sessions": {
+    "s_81ef76b733b16b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "af2bada9-9bf4-4224-8e84-7eee35c28325",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
