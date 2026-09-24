@@ -1,0 +1,19 @@
+scripts/fixtures/oauth_server.py
+  s_155e7025d0bbbb::t_6c3a646e5c3743 8-9,24,61-64,229-230,232-234
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "0d3ac2d80987456db467dc6108301450c4dfe99a",
+  "prompts": {},
+  "sessions": {
+    "s_155e7025d0bbbb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fdaa8217-e451-4f77-9b74-842d646d0473",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
