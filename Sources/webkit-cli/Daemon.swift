@@ -196,7 +196,7 @@ final class SessionServer {
     let call = Call(fd: fd, data: data)
     // control commands skip the queue: a person must be able to hide/list/stop while a command
     // waits (possibly for minutes) on that person
-    if let cmd = call.request?.cmd, ["show", "hide", "tabs", "stop"].contains(cmd) {
+    if let cmd = call.request?.cmd, ["show", "hide", "tabs", "close", "stop"].contains(cmd) {
       Task { @MainActor in
         await self.serve(call)
         self.active -= 1
