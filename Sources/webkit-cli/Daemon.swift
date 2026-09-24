@@ -148,13 +148,14 @@ final class SessionServer {
     active += 1
     lastActivity = Date()
     let previous = queue
+    let arrived = Date()
     queue = Task { @MainActor in
       await previous?.value
-      await self.serve(fd, data)
+      await self.serve(fd, data, arrived: arrived)
     }
   }
 
-  private func serve(_ fd: Int32, _ data: Data) async {
+  private func serve(_ fd: Int32, _ data: Data, arrived: Date) async {
     lastActivity = Date()
     var stopAfter = false
     let resp: Response
@@ -164,7 +165,17 @@ final class SessionServer {
         stopAfter = true
         resp = Response(ok: true, output: try jsonString(["stopped": account]))
       } else {
-        let output = try await withTimeout(req.timeout, cmd: req.cmd) { try await self.engine.handle(req) }
+        // --timeout counts from arrival, so time spent queued behind another request is included
+        let queued = Date().timeIntervalSince(arrived)
+        guard queued < req.timeout else {
+          throw CLIError("""
+            \(req.cmd) timed out after \(Int(req.timeout))s queued behind another request on this profile \
+            (one command runs at a time) — raise --timeout or wait for the other command
+            """, code: ExitCode.timeout)
+        }
+        var inTime = req
+        inTime.timeout = req.timeout - queued
+        let output = try await withTimeout(inTime.timeout, cmd: req.cmd) { try await self.engine.handle(inTime) }
         resp = Response(ok: true, output: output)
       }
     } catch let e as CLIError {

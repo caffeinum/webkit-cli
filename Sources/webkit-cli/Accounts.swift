@@ -87,6 +87,16 @@ func ensurePrivateDir(_ url: URL) throws {
   try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
 }
 
+/// Writes a 0600 file into an existing directory the caller chose (we don't tighten its permissions).
+func writePrivateFile(_ data: Data, to url: URL) throws {
+  let dir = url.deletingLastPathComponent()
+  guard FileManager.default.fileExists(atPath: dir.path) else { throw CLIError("directory does not exist: \(dir.path)") }
+  try? FileManager.default.removeItem(at: url)
+  guard FileManager.default.createFile(atPath: url.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
+    throw CLIError("could not write \(url.path)")
+  }
+}
+
 func writePrivate(_ data: Data, to url: URL) throws {
   try ensurePrivateDir(url.deletingLastPathComponent())
   let tmp = url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString)")

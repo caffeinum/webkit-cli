@@ -52,6 +52,9 @@ let helpText = """
     --until-url <regex>     `wait` until the tab's URL matches
     --until-selector <css>  `wait` until an element matching <css> exists
     --idle <sec>            idle timeout for a session this command starts (default 900)
+    --out <file>            write `eval`/`text` output to <file> (mode 0600) instead of stdout,
+                            and print only {"written","bytes"} — for API keys and other secrets
+    --raw                   `eval`: when the result is a string, output it without JSON quotes
     -h, --help              this text
 
   EXAMPLES
@@ -96,6 +99,8 @@ struct Options {
   var idle: Double = defaultIdleSeconds
   var untilURL: String?
   var untilSelector: String?
+  var out: String?
+  var raw = false
 }
 
 func parseArguments(_ args: [String]) throws -> (Command, Options) {
@@ -116,12 +121,17 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
     let a = args[i]
     switch a {
     case "-h", "--help": return (.help, opts)
+    case "--raw":
+      opts.raw = true
+      i += 1
+      continue
     case "--wait": opts.wait = try seconds(a)
     case "--timeout": opts.timeout = try seconds(a)
     case "--idle": opts.idle = try seconds(a)
     case "-a", "--account": opts.account = try value(a)
     case "--until-url": opts.untilURL = try value(a)
     case "--until-selector": opts.untilSelector = try value(a)
+    case "--out": opts.out = URL(fileURLWithPath: (try value(a) as NSString).expandingTildeInPath).standardizedFileURL.path
     default:
       if a.hasPrefix("--") { throw CLIError("unknown flag \(a) (see --help)", code: ExitCode.usage) }
       positional.append(a)
