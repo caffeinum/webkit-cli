@@ -1,0 +1,46 @@
+Sources/webkit-cli/SessionCookies.swift
+  s_81ef76b733b16b::t_a602b06871ce2c 1-32
+Sources/webkit-cli/Browser.swift
+  s_81ef76b733b16b::t_5ad68ba0be5497 1-35,37-87,89-126,129-188,190-218
+  s_81ef76b733b16b::t_f051b3f0a31a1c 36,88,127-128,189
+scripts/check.sh
+  s_81ef76b733b16b::t_1540a8b5b42565 1-25
+Sources/webkit-cli/main.swift
+  s_81ef76b733b16b::t_8a3c45634d5f6c 1-32
+Sources/webkit-cli/Commands.swift
+  s_81ef76b733b16b::t_8eb551292e20d2 1-72,74-99,102,104-106,119-164,177-226
+  s_81ef76b733b16b::t_2890ac6be754a1 100-101,103,107-118
+  s_81ef76b733b16b::t_492177079f1912 73,165-166,169-170,172-176
+  s_81ef76b733b16b::t_71c27b705381e5 167-168,171
+Sources/webkit-cli/Errors.swift
+  s_81ef76b733b16b::t_9453b81cdc495f 1-29
+Sources/webkit-cli/Accounts.swift
+  s_81ef76b733b16b::t_a044cf88f35778 1-101
+Sources/webkit-cli/CLI.swift
+  s_81ef76b733b16b::t_2f062dbc824fce 135-136
+  s_81ef76b733b16b::t_90afaaaffeca14 1-134,137-148
+README.md
+  s_81ef76b733b16b::t_c865ed0b82518a 1-113
+.gitignore
+  s_81ef76b733b16b::t_b8e5b5b8081bb0 1-3
+CLAUDE.md
+  s_81ef76b733b16b::t_5a3e2f0d86b9ce 1-10
+Package.swift
+  s_81ef76b733b16b::t_c8a93132bb18eb 1-13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "ea08075ae65b55f4c45b8496abe5694b4c17881a",
+  "prompts": {},
+  "sessions": {
+    "s_81ef76b733b16b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "af2bada9-9bf4-4224-8e84-7eee35c28325",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
