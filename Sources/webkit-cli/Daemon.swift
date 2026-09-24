@@ -40,12 +40,11 @@ enum SessionClient {
     guard let fd = try? connect(SessionPaths.socket(account)) else { return false }
     let resp = try exchange(fd, Request(cmd: "stop", timeout: 30))
     guard resp.ok else { throw CLIError(resp.error ?? "stop failed") }
-    // wait for it to release the profile before the caller touches the store
+    // wait until the process has exited (its lock is released) before the caller touches the store
     let giveUp = Date().addingTimeInterval(10)
-    while let probe = try? connect(SessionPaths.socket(account)) {
-      close(probe)
-      guard Date() < giveUp else { throw CLIError("session for '\(account)' did not exit after stop") }
-      usleep(100_000)
+    while !SessionServer.lockIsFree(account) {
+      guard Date() < giveUp else { throw CLIError("session for '\(account)' did not exit within 10s of stop") }
+      usleep(50_000)
     }
     return true
   }
@@ -106,16 +105,37 @@ final class SessionServer {
     self.idle = idle
   }
 
-  /// Returns false if another session process already owns this profile.
-  static func claim(_ account: String) throws -> Bool {
+  /// Takes the profile's lock. Returns false if another live session is serving this profile.
+  /// A session that is shutting down still holds the lock for a moment after its socket is gone,
+  /// so a busy lock with no socket means "wait for it", not "someone else is serving".
+  nonisolated static func claim(_ account: String) throws -> Bool {
     try ensurePrivateDir(SessionPaths.runDir)
     let fd = open(SessionPaths.lock(account), O_CREAT | O_RDWR, 0o600)
     guard fd >= 0 else { throw CLIError("cannot open \(SessionPaths.lock(account)): \(String(cString: strerror(errno)))") }
-    if flock(fd, LOCK_EX | LOCK_NB) != 0 {
-      close(fd)
-      return false
+    let giveUp = Date().addingTimeInterval(15)
+    while flock(fd, LOCK_EX | LOCK_NB) != 0 {
+      if let live = try? connect(SessionPaths.socket(account)) {
+        close(live)
+        close(fd)
+        return false
+      }
+      guard Date() < giveUp else {
+        close(fd)
+        throw CLIError("the lock for '\(account)' is held but nothing is serving — is a session stuck? (\(SessionPaths.lock(account)))")
+      }
+      usleep(50_000)
     }
     return true // fd stays open (and locked) for the life of the process
+  }
+
+  /// True once no process holds the profile's lock.
+  nonisolated static func lockIsFree(_ account: String) -> Bool {
+    let fd = open(SessionPaths.lock(account), O_RDWR)
+    guard fd >= 0 else { return true }
+    defer { close(fd) }
+    guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { return false }
+    flock(fd, LOCK_UN)
+    return true
   }
 
   func start() throws {
