@@ -6,7 +6,7 @@
 //   type <dom-id> <text>     click the element with that DOM id in the window, then type keystrokes
 //   press <dom-id|title>     AXPress a web element (DOM id) or a native button (title), e.g. `press Done`
 //   click <dom-id|title>     real mouse click at the element's centre (window must be frontmost)
-//   cmdw                     send ⌘W to the process
+//   cmdw                     send ⌘W via the HID tap, only if the process is frontmost
 //   close                    press the window's close (red) button
 //   watch <seconds>          poll every 0.5s; exit 1 if the process ever has an on-screen window
 // Exit: 0 ok, 1 not found / window seen (watch), 2 usage.
@@ -147,8 +147,12 @@ case "type":
   AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
   mouseClick(el)
   for ch in rest[1] { key(0, text: String(ch)) }
-  usleep(200_000)
-  let value: String = attr(el, kAXValueAttribute) ?? ""
+  // AXValue can lag the keystrokes (React re-render), so poll briefly
+  var value = ""
+  for _ in 0..<20 where value != rest[1] {
+    usleep(100_000)
+    value = attr(el, kAXValueAttribute) ?? ""
+  }
   guard value == rest[1] else { fail("typed into '\(rest[0])' but its value is \(value.count) chars, expected \(rest[1].count)") }
   print("typed \(rest[1].count) chars into #\(rest[0])")
 case "press":
@@ -162,10 +166,18 @@ case "click":
   mouseClick(el)
   print("clicked \(rest[0])")
 case "cmdw":
+  // menu key equivalents only fire for events from the HID tap, not postToPid; guard so a stray ⌘W
+  // can never land in another app
   _ = requireWindow()
   activate()
-  key(13, flags: .maskCommand)  // kVK_ANSI_W
-  print("sent ⌘W")
+  guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { fail("pid \(pid) is not frontmost; not sending ⌘W") }
+  for down in [true, false] {
+    let e = CGEvent(keyboardEventSource: nil, virtualKey: 13, keyDown: down)!  // kVK_ANSI_W
+    e.flags = .maskCommand
+    e.post(tap: .cghidEventTap)
+    usleep(30_000)
+  }
+  print("sent ⌘W (HID, pid frontmost)")
 case "close":
   let w = requireWindow()
   guard let b: AXUIElement = attr(w, kAXCloseButtonAttribute) else { fail("window has no close button") }
