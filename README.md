@@ -34,46 +34,49 @@ cp .build/release/webkit-cli /usr/local/bin/    # keep the name "webkit-cli", se
 ## Commands
 
 ```
-webkit-cli accounts                         list accounts (JSON)
-webkit-cli auth <account> <url>             visible window: sign in, then close it to save
-webkit-cli open <account> <url>             → {"url","title","status"}
-webkit-cli text <account> <url>             page innerText
-webkit-cli eval <account> <url> '<js>'      JS as an async function body → JSON result
-webkit-cli shot <account> <url> <out.png>   screenshot of the 1280×800 viewport (PNG at 2× on Retina, mode 0600)
-webkit-cli forget <account>                 delete the account and all its website data
-webkit-cli doctor                           check that headless pages really render
+webkit-cli auth <url>                open a window at <url>; sign in; click Done to save
+webkit-cli open <url>                → {"url","title","status"}
+webkit-cli text <url>                page innerText
+webkit-cli eval <url> '<js>'         JS as an async function body → JSON result
+webkit-cli shot <url> <out.png>      screenshot of the 1280×800 viewport (PNG at 2× on Retina, mode 0600)
+webkit-cli accounts                  list saved profiles (JSON)
+webkit-cli forget <account>          delete a profile and all its website data
+webkit-cli doctor                    check that headless pages really render
 
---wait <sec>     settle time after load (default 3)
---timeout <sec>  give up and exit 3 (default 60; auth has no timeout)
+-a, --account <name>  use a separate profile instead of the default; `-` = throwaway, in memory
+--wait <sec>          settle time after load (default 3)
+--timeout <sec>       give up and exit 3 (default 60; auth has no timeout)
 ```
 
-- `<account>` is any name you pick. `-` gives a throwaway in-memory session that saves nothing.
-- A URL without a scheme gets `https://`.
+- **One shared default profile.** Every command uses the profile named `main` unless you pass `--account`. `main` is created on first use. A named profile is only created by `auth`, so a typo in `--account` fails instead of silently giving you a logged-out profile.
+- A URL without a scheme gets `https://`, so `google.com` means `https://google.com`.
 - Exit codes: `0` ok, `1` error, `2` usage, `3` timeout. Errors go to stderr.
 
 ### Sign in once
 
 ```sh
-webkit-cli auth work google      # accounts.google.com in a real window
-webkit-cli auth work github      # github.com/login
-webkit-cli auth work https://railway.com/login
+webkit-cli auth google.com        # sign in to Google, click Done
+webkit-cli auth github.com        # same profile, now GitHub too
+webkit-cli auth railway.com       # "Sign in with GitHub" completes in the same profile
+webkit-cli auth vercel.com --account work   # a second, separate identity
 ```
 
-`auth` is the only command that opens a window: a normal titled window with a real Edit menu, so ⌘V pastes passwords. You type into the page yourself; webkit-cli never handles, stores or prints passwords. Close the window (⌘W), quit (⌘Q) or press Ctrl-C in the terminal to save and exit. Sign in to Google or GitHub in an account once, and "Sign in with Google/GitHub" buttons on other sites in that same account usually complete headless. Popups from `window.open`, which some OAuth flows use, open as real windows here and as hidden ones in headless mode.
+`auth` is the only command that opens a window. It's a normal window with a bar across the top that shows the instruction ("Sign in, then click Done."), the page's current URL, and a **Done** button. It also has a real Edit menu, so ⌘V pastes passwords. You type into the page yourself; webkit-cli never handles, stores or prints passwords. Click Done, close the window (⌘W), quit (⌘Q) or press Ctrl-C in the terminal: every one of these saves and exits. Popups from `window.open`, which some OAuth flows use, open as real windows here and as hidden ones in headless mode.
 
 ### Then run headless
 
 ```sh
-webkit-cli open work https://console.e2b.dev
-webkit-cli text work https://railway.com/account/tokens
-webkit-cli eval work https://github.com/settings/tokens 'return document.title'
-webkit-cli shot work https://vercel.com/dashboard /tmp/vercel.png
+webkit-cli open https://console.e2b.dev
+webkit-cli text https://railway.com/account/tokens
+webkit-cli eval https://github.com/settings/tokens 'return document.title'
+webkit-cli shot https://vercel.com/dashboard /tmp/vercel.png --account work
+webkit-cli text example.com --account -      # nothing read or saved
 ```
 
 `eval` runs your code as the body of an async function in the page. `return` gives the output and `await` works. Multi-step flows (click, wait, read) go inside a single `eval`:
 
 ```sh
-webkit-cli eval work https://railway.com/account/tokens '
+webkit-cli eval https://railway.com/account/tokens '
   const i = document.querySelector("input[name=name]");
   // React-controlled inputs: use the native setter, then fire input/change
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(i, "agent-key");
@@ -103,11 +106,23 @@ For `<select>`, use `HTMLSelectElement.prototype`'s setter and dispatch `change`
 - **Passkeys**: WebAuthn platform passkeys (iCloud Keychain / Touch ID) **don't work** in this unbundled CLI. `PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()` returns `false`. WKWebView only offers them to apps signed with the restricted `com.apple.developer.web-browser.public-key-credential` entitlement, and that entitlement needs an embedded provisioning profile, which only a signed `.app` bundle can carry. This is how apps like Search.app do it. Workaround for now: at the Google/GitHub prompt, choose password, a phone prompt or a security code instead of a passkey. Wrapping webkit-cli in a signed `.app` would fix this, but WebKit would then key its storage by bundle ID instead of binary name, so existing accounts would need migrating.
 - **No network interception**: you can't read or modify requests or responses. Use `fetch` inside `eval` when you need an API call with the page's cookies.
 - **Synthetic events aren't trusted**: `.click()` and `dispatchEvent` produce `isTrusted: false` events. Most apps accept them. A few (some payment and captcha widgets) don't.
+- **Concurrent commands on one profile** work, and all their persistent cookies are saved, but each process sees only its own changes while it runs. The session-cookie side-car is last-writer-wins.
 - **One process per command**: every command loads the page fresh. A long-lived daemon/session mode (load once, send many steps) is planned for v2. Until then, put multi-step flows inside one `eval`.
 - `eval` and `text` see only the main page. Popups and cross-origin iframes aren't scriptable from the CLI.
 
 ## What's verified
 
-On macOS 27.0 with `scripts/check.sh`: `doctor` (visible, rAF > 0), `open`, `text`, `eval` (including `await` and JS errors → exit 1), `shot` (valid PNG), and `--timeout` → exit 3, all against example.com. Also checked by hand: persistent cookies and localStorage survive across processes in a named account, session-only cookies come back only because of the side-car file (with the file moved away they're gone), `forget` deletes both the WebKit store and the side-car, and a renamed binary refuses to run.
+On macOS 27.0 with `scripts/check.sh`: `doctor` (visible, rAF > 0), `open`, `text`, `eval` (including `await` and JS errors → exit 1), `shot` (valid PNG), and `--timeout` → exit 3, all against example.com. Also checked by hand:
+- persistent cookies and localStorage survive across processes in a profile
+- session-only cookies come back only because of the side-car file (with the file moved away they're gone)
+- three concurrent `eval`s on one profile all persist their cookies
+- `forget` deletes both the WebKit store and the side-car
+- a renamed binary refuses to run
+- an unknown `--account` fails
+- the `auth` window opens with the top bar (instruction, live URL, Done). Ctrl-C/SIGTERM saves and exits 0.
 
-**Not yet verified:** `auth` has not been run end to end. It needs a person at the keyboard to sign in. The underlying technique (Safari UA, per-account store, Google account chooser → signed in headless) was proven in the prototypes this tool grew from, but not through this binary.
+**auth, end to end:** a Google sign-in was done by hand with v1 (`auth main google`). Afterwards the headless default profile loads `myaccount.google.com` signed in, while a throwaway profile gets redirected to the signed-out `google.com/account/about` page. Not tested: GitHub sign-in, and clicking the Done button by hand. It runs the same close path as ⌘W and Ctrl-C.
+
+## Upgrading from v1 (`auth <account> <url>`)
+
+No migration is needed. The default profile is named `main`, so a login made with `webkit-cli auth main <url>` is what every command now uses. Other v1 accounts keep working with `--account <name>`.

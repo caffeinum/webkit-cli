@@ -8,3 +8,5 @@ swift package, one executable target. `swift build -c release`, then `./scripts/
 - Low Power Mode caps rAF at 30/s; doctor only requires > 0.
 - passkeys need a signed .app with com.apple.developer.web-browser.public-key-credential; unbundled CLI can't.
 - never test against aleks's real accounts or ~/Library/WebKit/com.officecommun.search.
+- default profile is `main` (v1 accounts compat); named profiles only created by `auth --account`.
+- aleks may be running `.build/release/webkit-cli auth` — don't rebuild into .build while one runs (`pgrep -fl webkit-cli`); build with `--scratch-path` elsewhere and `BIN=... ./scripts/check.sh`.

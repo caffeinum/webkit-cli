@@ -7,35 +7,39 @@ let helpText = """
   except during `auth`.
 
   USAGE
-    webkit-cli accounts                         list accounts (JSON)
-    webkit-cli auth <account> <url>             open a visible window; sign in; close the window to save
-    webkit-cli open <account> <url>             load and print {"url","title","status"}
-    webkit-cli text <account> <url>             print the page's innerText
-    webkit-cli eval <account> <url> '<js>'      run JS as an async function body, print the JSON result
-    webkit-cli shot <account> <url> <out.png>   save a 1280x800 screenshot (file mode 0600)
-    webkit-cli forget <account>                 delete the account and all its website data
-    webkit-cli doctor                           check that headless pages really render (visible + rAF)
+    webkit-cli auth <url>                open a window at <url>; sign in; click Done to save
+    webkit-cli open <url>                load and print {"url","title","status"}
+    webkit-cli text <url>                print the page's innerText
+    webkit-cli eval <url> '<js>'         run JS as an async function body, print the JSON result
+    webkit-cli shot <url> <out.png>      save a 1280x800 screenshot (file mode 0600)
+    webkit-cli accounts                  list saved accounts (JSON)
+    webkit-cli forget <account>          delete an account and all its website data
+    webkit-cli doctor                    check that headless pages really render (visible + rAF)
 
-  <account> is a name you pick (letters, digits, . _ - @). Use `-` for a throwaway in-memory
-  session that saves nothing. A <url> without a scheme gets https://. For `auth`, the shortcuts
-  `google` / `google.com` and `github` / `github.com` open that provider's sign-in page — sign in
-  there once and later "Sign in with Google/GitHub" buttons work headless in that account.
+  Everything shares one default profile ("main") unless you pass --account. Sign in to as many
+  sites as you like into it — `auth google.com`, then `auth github.com` — and every headless
+  command after that is logged in to all of them, including "Sign in with Google/GitHub" flows.
+  A <url> without a scheme gets https://.
 
   FLAGS
-    --wait <sec>      settle time after the page finishes loading (default 3)
-    --timeout <sec>   give up after this long, exit 3 (default 60; `auth` never times out)
-    -h, --help        this text
+    -a, --account <name>  use a separate profile (letters, digits, . _ - @); `-` = throwaway,
+                          in memory, saves nothing. Named profiles are created by `auth`.
+    --wait <sec>          settle time after the page finishes loading (default 3)
+    --timeout <sec>       give up after this long, exit 3 (default 60; `auth` never times out)
+    -h, --help            this text
 
   EXAMPLES
-    webkit-cli auth work google                  # sign in to Google in a window, then close it
-    webkit-cli open work https://console.cloud.google.com
-    webkit-cli text - example.com
-    webkit-cli eval work https://github.com/settings/tokens 'return document.title'
-    webkit-cli eval - example.com --wait 0 '
+    webkit-cli auth google.com                   # sign in to Google in a window, then close it
+    webkit-cli auth github.com                   # same profile, now GitHub too
+    webkit-cli open https://console.cloud.google.com
+    webkit-cli eval https://github.com/settings/tokens 'return document.title'
+    webkit-cli text example.com --account -
+    webkit-cli auth railway.com --account work   # a second identity
+    webkit-cli shot https://railway.com/dashboard /tmp/railway.png --account work
+    webkit-cli eval example.com --wait 0 '
       document.querySelector("a").click();
       await new Promise(r => setTimeout(r, 2000));
       return location.href'
-    webkit-cli shot work https://railway.com/dashboard /tmp/railway.png
 
   `eval` code is the body of an async function: use `return` to produce output, `await` freely.
   Fill React inputs with the native setter, then dispatch input/change:
@@ -63,9 +67,14 @@ enum Command {
   case doctor
 }
 
+/// The profile used when no --account is given. Named "main" so logins made with v1's
+/// `auth main <url>` are the default profile without any migration.
+let defaultAccount = "main"
+
 struct Options {
   var wait: Double = 3
   var timeout: Double = 60
+  var account: String = defaultAccount
 }
 
 func parseArguments(_ args: [String]) throws -> (Command, Options) {
@@ -84,6 +93,11 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
       if a == "--wait" { opts.wait = v } else { opts.timeout = v }
       i += 2
       continue
+    case "-a", "--account":
+      guard i + 1 < args.count else { throw CLIError("\(a) needs an account name", code: ExitCode.usage) }
+      opts.account = args[i + 1]
+      i += 2
+      continue
     default:
       if a.hasPrefix("--") { throw CLIError("unknown flag \(a) (see --help)", code: ExitCode.usage) }
       positional.append(a)
@@ -96,6 +110,7 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
   func need(_ n: Int, _ usage: String) throws {
     guard rest.count == n else { throw CLIError("usage: webkit-cli \(usage)", code: ExitCode.usage) }
   }
+  let account = opts.account
 
   switch verb {
   case "help":
@@ -104,22 +119,22 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
     try need(0, "accounts")
     return (.accounts, opts)
   case "auth":
-    try need(2, "auth <account> <url|google|github>")
-    guard rest[0] != "-" else { throw CLIError("auth needs a named account — `-` saves nothing", code: ExitCode.usage) }
-    return (.auth(account: rest[0], url: try authURL(rest[1])), opts)
+    try need(1, "auth <url> [--account <name>]")
+    guard account != "-" else { throw CLIError("auth needs a saved account — `-` keeps nothing", code: ExitCode.usage) }
+    return (.auth(account: account, url: try parseURL(rest[0])), opts)
   case "open":
-    try need(2, "open <account> <url>")
-    return (.open(account: rest[0], url: try parseURL(rest[1])), opts)
+    try need(1, "open <url>")
+    return (.open(account: account, url: try parseURL(rest[0])), opts)
   case "text":
-    try need(2, "text <account> <url>")
-    return (.text(account: rest[0], url: try parseURL(rest[1])), opts)
+    try need(1, "text <url>")
+    return (.text(account: account, url: try parseURL(rest[0])), opts)
   case "eval":
-    try need(3, "eval <account> <url> '<js>'")
-    return (.eval(account: rest[0], url: try parseURL(rest[1]), js: rest[2]), opts)
+    try need(2, "eval <url> '<js>'")
+    return (.eval(account: account, url: try parseURL(rest[0]), js: rest[1]), opts)
   case "shot":
-    try need(3, "shot <account> <url> <out.png>")
-    let out = URL(fileURLWithPath: (rest[2] as NSString).expandingTildeInPath)
-    return (.shot(account: rest[0], url: try parseURL(rest[1]), out: out), opts)
+    try need(2, "shot <url> <out.png>")
+    let out = URL(fileURLWithPath: (rest[1] as NSString).expandingTildeInPath)
+    return (.shot(account: account, url: try parseURL(rest[0]), out: out), opts)
   case "forget":
     try need(1, "forget <account>")
     return (.forget(account: rest[0]), opts)
@@ -137,12 +152,4 @@ func parseURL(_ s: String) throws -> URL {
     throw CLIError("not a URL: \(s)", code: ExitCode.usage)
   }
   return url
-}
-
-func authURL(_ s: String) throws -> URL {
-  switch s.lowercased() {
-  case "google", "google.com": return URL(string: "https://accounts.google.com/")!
-  case "github", "github.com": return URL(string: "https://github.com/login")!
-  default: return try parseURL(s)
-  }
 }

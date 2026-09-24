@@ -11,7 +11,8 @@ struct Profile {
     if account == "-" { return Profile(store: .nonPersistent(), sessionFile: nil) }
     try Accounts.requirePinnedExecutableName()
     var accounts = try Accounts.load()
-    let id = create ? try accounts.create(account) : try accounts.id(of: account)
+    // the default profile is created on first use; a named one must come from `auth` so typos fail loudly
+    let id = create || account == defaultAccount ? try accounts.create(account) : try accounts.id(of: account)
     let profile = Profile(store: WKWebsiteDataStore(forIdentifier: id), sessionFile: Accounts.sessionFile(for: id))
     try await SessionCookies.restore(into: profile.store, from: profile.sessionFile!)
     return profile
@@ -95,9 +96,9 @@ private func auth(_ account: String, _ url: URL) async throws {
   installMenu()
   let profile = try await Profile.open(account, create: true)
   let browser = try Browser(store: profile.store, visible: true,
-                            title: "webkit-cli · \(account) — sign in, then close this window to save")
+                            title: "webkit-cli · \(account)")
   browser.web.load(URLRequest(url: url))
-  printErr("webkit-cli: signing in as '\(account)' — close the window when you're done (⌘W or Ctrl-C here).")
+  printErr("webkit-cli: signing in as '\(account)' — click Done in the window when you're finished (or close it / Ctrl-C here).")
   let signals = closeOnSignals(browser.window)
   await browser.waitUntilClosed()
   signals.forEach { $0.cancel() }

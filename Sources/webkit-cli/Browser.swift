@@ -50,6 +50,8 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     try attach(web, to: window)
     window.delegate = self
     if visible {
+      let w = window
+      window.contentView = AuthContainer(web: web) { w.performClose(nil) }
       window.center()
       window.makeKeyAndOrderFront(nil)
       NSApp.activate(ignoringOtherApps: true)
