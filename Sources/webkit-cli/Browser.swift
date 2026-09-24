@@ -40,6 +40,8 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
   let window: NSWindow
   let visible: Bool
   private(set) var lastStatus: Int?
+  /// Next snapshot ref number for this tab. Never goes back, so a ref can't be reused, even across pages.
+  var nextRef = 1
   /// The most recent main-frame load error, even one nobody was awaiting (e.g. after a click).
   private(set) var lastFailure: String?
   private var requestedURL: String?

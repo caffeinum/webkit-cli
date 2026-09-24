@@ -15,7 +15,8 @@ let helpText = """
     webkit-cli type <tab> <selector> <text> set an input's value (React-safe) — never echoed
     webkit-cli wait <tab> [--until-url <regex>] [--until-selector <css>]
     webkit-cli goto <tab> <url>             navigate an open tab
-    webkit-cli text <tab>                   innerText
+    webkit-cli snapshot <tab>               what's on the page, one element per line, actions with refs:
+                                              [e7] button "Create"   →   webkit-cli click <tab> e7
     webkit-cli eval <tab> '<js>'            run JS as an async function body, print the JSON result
     webkit-cli shot <tab> <out.png>         1280x800 viewport screenshot (PNG at 2x on Retina, mode 0600)
     webkit-cli tabs                         list open tabs (popups appear as their own tabs)
@@ -31,7 +32,7 @@ let helpText = """
                                             wait for the person to get past it, hide it, carry on
 
   ONE-SHOT (a URL instead of a tab: load it in a temporary tab, act, close)
-    webkit-cli text <url>
+    webkit-cli snapshot <url>
     webkit-cli eval <url> '<js>'
     webkit-cli shot <url> <out.png>
 
@@ -48,8 +49,10 @@ let helpText = """
   Tabs live in a background session process per profile, started by the first command and
   ended after --idle seconds without commands (default 900) or by `stop`.
 
-  <selector> is CSS (`button[type=submit]`, `#email`) or `text=<words>` to match a visible
-  button/link/option by its text (exact match first, then the shortest one containing it).
+  <selector> is a snapshot ref (`e7`), CSS (`button[type=submit]`, `#email`), or `text=<words>`
+  to match a visible button/link/option by its text (exact match first, then the shortest
+  one containing it). A ref keeps pointing at its element across snapshots and is never reused
+  in a tab; if the element is gone you get "stale ref" (exit 1), never a click on something else.
 
   FLAGS
     -a, --account <name>    use a separate profile (letters, digits, . _ - @); `-` = throwaway,
@@ -63,7 +66,11 @@ let helpText = """
     --challenge-url <regex> with --escalate: also treat matching URLs as challenges (repeatable)
     --human-timeout <sec>   with --escalate: how long to wait for the person (default 600, exit 3
                             after); time spent waiting for a person doesn't count toward --timeout
-    --out <file>            write `eval`/`text` output to <file> (mode 0600) instead of stdout,
+    --json                  `snapshot` as JSON: {title, url, truncated, nodes: [{ref?, role, name, …}]}
+    --redact                `snapshot`: mask secret-looking values as ‹redacted len=N #sha8›
+                            (password inputs are never shown either way)
+    --max-chars <n>         `snapshot` budget (default 8000); text goes first, dialogs never
+    --out <file>            write `eval`/`snapshot` output to <file> (mode 0600) instead of stdout,
                             and print only {"written","bytes"} — for API keys and other secrets
     --raw                   `eval`: when the result is a string, output it without JSON quotes
     -h, --help              this text
@@ -73,10 +80,10 @@ let helpText = """
     tab=$(webkit-cli open https://cloud.browser-use.com/signin | jq -r .tab)
     webkit-cli click $tab 'text=Continue with Google'
     webkit-cli wait $tab --until-url '^https://cloud\\.browser-use\\.com/(?!signin)' --timeout 90
-    webkit-cli text $tab
+    webkit-cli snapshot $tab
     webkit-cli close $tab
     webkit-cli eval https://github.com/settings/tokens 'return document.title'
-    webkit-cli text example.com --account -
+    webkit-cli snapshot example.com --account -
 
   `eval` code is the body of an async function: use `return` to produce output, `await` freely.
   It dies if the page navigates mid-script — use `click` + `wait` for steps that change page.
@@ -117,6 +124,9 @@ struct Options {
   var escalate = false
   var challengeURLs: [String] = []
   var humanTimeout: Double?
+  var json = false
+  var redact = false
+  var maxChars: Int?
 }
 
 func parseArguments(_ args: [String]) throws -> (Command, Options) {
@@ -137,10 +147,19 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
     let a = args[i]
     switch a {
     case "-h", "--help": return (.help, opts)
-    case "--raw", "--until-hidden", "--escalate":
-      if a == "--raw" { opts.raw = true } else if a == "--until-hidden" { opts.untilHidden = true } else { opts.escalate = true }
+    case "--raw", "--until-hidden", "--escalate", "--json", "--redact":
+      switch a {
+      case "--raw": opts.raw = true
+      case "--until-hidden": opts.untilHidden = true
+      case "--escalate": opts.escalate = true
+      case "--json": opts.json = true
+      default: opts.redact = true
+      }
       i += 1
       continue
+    case "--max-chars":
+      guard let n = Int(try value(a)), n > 0 else { throw CLIError("--max-chars needs a positive number", code: ExitCode.usage) }
+      opts.maxChars = n
     case "--reason": opts.reason = try value(a)
     case "--challenge-url":
       let pattern = try value(a)
@@ -177,7 +196,8 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
       cmd: cmd, target: target, url: url, js: js, selector: selector, text: text, path: path,
       untilURL: opts.untilURL, untilSelector: opts.untilSelector, wait: opts.wait, timeout: opts.timeout,
       untilHidden: opts.untilHidden ? true : nil, escalate: opts.escalate ? true : nil,
-      challengeURLs: opts.challengeURLs.isEmpty ? nil : opts.challengeURLs, humanTimeout: opts.humanTimeout))
+      challengeURLs: opts.challengeURLs.isEmpty ? nil : opts.challengeURLs, humanTimeout: opts.humanTimeout,
+      redact: opts.redact ? true : nil, maxChars: opts.maxChars, json: opts.json ? true : nil))
   }
   func tabOrURL(_ s: String) throws -> String { isTabID(s) ? s : try parseURL(s).absoluteString }
   func tabID(_ s: String) throws -> String {
@@ -228,8 +248,10 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
     try need(0, "tabs")
     return (session("tabs"), opts)
   case "text":
-    try need(1, "text <tab|url>")
-    return (session("text", target: try tabOrURL(rest[0])), opts)
+    throw CLIError("text was removed — use `snapshot`, or `eval <tab> 'return document.body.innerText'` for raw text", code: ExitCode.usage)
+  case "snapshot":
+    try need(1, "snapshot <tab|url> [--json] [--redact] [--max-chars N]")
+    return (session("snapshot", target: try tabOrURL(rest[0])), opts)
   case "eval":
     try need(2, "eval <tab|url> '<js>'")
     return (session("eval", target: try tabOrURL(rest[0]), js: rest[1]), opts)

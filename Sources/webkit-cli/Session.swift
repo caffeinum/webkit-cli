@@ -18,6 +18,9 @@ struct Request: Codable {
   var escalate: Bool?
   var challengeURLs: [String]?
   var humanTimeout: Double?
+  var redact: Bool?
+  var maxChars: Int?
+  var json: Bool?
 }
 
 let defaultHumanTimeout: Double = 600
@@ -121,12 +124,19 @@ final class Engine {
         rows.append(row)
       }
       return try jsonString(rows)
-    case "text":
+    case "snapshot":
+      if let target = r.target, !isTabID(target) {
+        note("snapshot of a URL: its tab closes right after, so these refs can't be used — `open` it for refs")
+      }
       return try await withTarget(r) { tab in
-        guard let text = try await tab.callJS("return document.body ? document.body.innerText : null") as? String else {
-          throw CLIError("page has no <body>")
+        let result = try await tab.callJS(snapshotJS, [
+          "startRef": tab.nextRef, "redactOn": r.redact == true, "maxChars": r.maxChars ?? 8000, "asJSON": r.json == true,
+        ]) as? [String: Any]
+        guard let result, let output = result["output"] as? String, let next = result["nextRef"] as? Int else {
+          throw CLIError("snapshot returned nothing")
         }
-        return text
+        tab.nextRef = max(tab.nextRef, next)
+        return output
       }
     case "eval":
       guard let js = r.js else { throw CLIError("eval needs javascript") }
@@ -271,8 +281,9 @@ final class Engine {
       } ?? true
       var selectorOK = true
       if idle, urlOK, let sel = r.untilSelector {
-        let found = try await tab.callJS(
-          "try { return !!document.querySelector(selector) } catch (e) { return 'invalid' }", ["selector": sel])
+        let found = try await tab.callJS(findJS + """
+          try { return !!find(selector) } catch (e) { return /^stale ref/.test(e.message) ? false : 'invalid' }
+          """, ["selector": sel])
         if found as? String == "invalid" {
           throw CLIError("--until-selector is not a valid CSS selector: \(sel)", code: ExitCode.usage)
         }
@@ -367,27 +378,6 @@ func writePNG(_ data: Data, to url: URL) throws {
   }
 }
 
-/// `selector` is CSS, or `text=<words>` to match a visible clickable element by its text / label.
-private let findJS = """
-  const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length) &&
-    getComputedStyle(el).visibility !== 'hidden';
-  const norm = s => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-  const label = el => norm(el.innerText || el.value || el.getAttribute('aria-label') || el.title);
-  const clickables = () => [...document.querySelectorAll(
-    'button, a, [role=button], [role=link], [role=menuitem], [role=option], [role=tab], input[type=submit], input[type=button], summary, label, [data-identifier], [onclick], [tabindex]'
-  )].filter(visible);
-  const find = sel => {
-    if (!sel.startsWith('text=')) return document.querySelector(sel);
-    const want = norm(sel.slice(5));
-    const all = clickables();
-    return all.find(el => label(el) === want)
-      || all.filter(el => label(el).includes(want)).sort((a, b) => label(a).length - label(b).length)[0]
-      || null;
-  };
-  const missing = sel => new Error('no element matches ' + sel + '. visible clickables: ' +
-    JSON.stringify([...new Set(clickables().map(label).filter(Boolean))].slice(0, 25)));
-  """
-
 private let clickJS = findJS + """
   const el = find(selector);
   if (!el) throw missing(selector);
@@ -409,12 +399,22 @@ private let typeJS = findJS + """
   const el = find(selector);
   if (!el) throw missing(selector);
   el.focus();
-  const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
-    : el instanceof HTMLSelectElement ? HTMLSelectElement.prototype
-    : el instanceof HTMLInputElement ? HTMLInputElement.prototype : null;
-  if (!proto) throw new Error(selector + ' is a <' + el.tagName.toLowerCase() + '>, not an input, textarea or select');
-  Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, text);
-  el.dispatchEvent(new Event('input', {bubbles: true}));
-  el.dispatchEvent(new Event('change', {bubbles: true}));
-  return {tag: el.tagName.toLowerCase(), name: el.name || el.id || null};
+  const win = el.ownerDocument.defaultView; // the element may live in a same-origin iframe
+  const tag = el.tagName;
+  if (tag === 'SELECT') {
+    const want = text.trim().toLowerCase();
+    const opt = [...el.options].find(o => (o.label || o.text).trim().toLowerCase() === want) || [...el.options].find(o => o.value === text);
+    if (!opt) throw new Error('no option ' + JSON.stringify(text) + ' in ' + selector + ' (options: ' + [...el.options].map(o => o.label || o.text).join(', ') + ')');
+    Object.getOwnPropertyDescriptor(win.HTMLSelectElement.prototype, 'value').set.call(el, opt.value);
+  } else if (tag === 'INPUT' || tag === 'TEXTAREA') {
+    const proto = tag === 'INPUT' ? win.HTMLInputElement.prototype : win.HTMLTextAreaElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, text);
+  } else if (el.isContentEditable) {
+    el.textContent = text;
+  } else {
+    throw new Error(selector + ' is a <' + tag.toLowerCase() + '>, not an input, textarea, select or editable');
+  }
+  el.dispatchEvent(new win.Event('input', {bubbles: true}));
+  el.dispatchEvent(new win.Event('change', {bubbles: true}));
+  return {tag: tag.toLowerCase(), name: el.name || el.id || el.getAttribute('data-wk-ref') || null};
   """
