@@ -276,6 +276,7 @@ final class Engine {
         humanSince = since
         let limit = r.humanTimeout ?? defaultHumanTimeout
         if Date().timeIntervalSince(since) > limit {
+          tab.hide()
           throw CLIError("no one clicked Done within \(Int(limit))s (tab \(id)) — raise --human-timeout", code: ExitCode.timeout)
         }
       } else {

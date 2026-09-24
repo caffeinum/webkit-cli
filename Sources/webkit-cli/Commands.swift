@@ -215,7 +215,7 @@ func installMenu() {
     return i
   }
   submenu("webkit-cli", [item("Save and Quit", "performClose:", "q")])
-  submenu("File", [item("Close Window (saves)", "performClose:", "w")])
+  submenu("File", [item("Close Window", "performClose:", "w")])
   submenu("Edit", [
     item("Undo", "undo:", "z"),
     item("Redo", "redo:", "z", [.command, .shift]),
