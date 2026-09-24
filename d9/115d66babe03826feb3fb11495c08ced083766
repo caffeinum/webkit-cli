@@ -1,0 +1,49 @@
+docs/acceptance/escalate.md
+  s_81ef76b733b16b::t_ce38108039d03b 51-64
+Sources/webkit-cli/AuthBar.swift
+  s_81ef76b733b16b::t_e3e98aa1f8e2dc 4,6,8,11-13,15-17,33-58,60-65
+Sources/webkit-cli/Daemon.swift
+  s_155e7025d0bbbb::t_cca7ddb4937d66 361
+  s_81ef76b733b16b::t_506fcd6bf70ac8 54-56,63-82,197-206,247-253,273,325-334,340-342,349-350,352-353,362-366,368,370,374-377,434-435,437-441,443
+Sources/webkit-cli/Browser.swift
+  s_81ef76b733b16b::t_61c2b676b6095c 193-194,196
+  s_81ef76b733b16b::t_142a8d7a1e3e4e 30-35,95-99,107-161,164
+Sources/webkit-cli/Commands.swift
+  s_81ef76b733b16b::t_506fcd6bf70ac8 80-82,202-203
+Sources/webkit-cli/Session.swift
+  s_81ef76b733b16b::t_61c2b676b6095c 17-20,23-49,73-74,81-83,90,110,119,157,159,172,177-186,256,262,264-266,281-282,287-333
+  s_81ef76b733b16b::t_506fcd6bf70ac8 69-72,75-80,91
+  s_155e7025d0bbbb::t_cca7ddb4937d66 136
+  s_81ef76b733b16b::t_dd7ccd6f9dafde 222
+  s_81ef76b733b16b::t_5d13b1aa835b68 334
+scripts/browser-use-apikey.sh
+  s_81ef76b733b16b::t_ce38108039d03b 9-11,101-109
+README.md
+  s_81ef76b733b16b::t_28bbfd8a1c70e7 5,80,111-127
+Sources/webkit-cli/CLI.swift
+  s_81ef76b733b16b::t_055dc1947c095e 25-32,63-65,115-119,140-141,144-151,178-180,188,192-197,249-254
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "d9115d66babe03826feb3fb11495c08ced083766",
+  "prompts": {},
+  "sessions": {
+    "s_155e7025d0bbbb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fdaa8217-e451-4f77-9b74-842d646d0473",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    },
+    "s_81ef76b733b16b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "af2bada9-9bf4-4224-8e84-7eee35c28325",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
