@@ -22,6 +22,22 @@ CACHE = os.path.join(os.environ.get("TMPDIR", "/tmp"), "webkit-cli-fixture-react
 codes, sessions, pending, lock = {}, {}, {}, threading.Lock()
 
 
+def fake_token(alphabet, n):
+    return "".join(secrets.choice(alphabet) for _ in range(n))
+
+
+ALNUM = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+B64URL = ALNUM + "-_"
+# fake secrets for snapshot S6, generated per server start; QA reads them from /snapshot/secrets.json
+FAKE_SECRETS = {
+    "bu": "bu_" + fake_token(ALNUM, 40),
+    "sk": "sk-" + fake_token(ALNUM, 32),
+    "jwt": "eyJhbGciOiJIUzI1NiJ9." + fake_token(B64URL, 36) + "." + fake_token(B64URL, 43),
+    "plain32": fake_token("abcdef", 16) + fake_token("0123456789", 8) + fake_token("ABCDEF", 8),
+    "password": "pw-" + fake_token(ALNUM, 20),
+}
+
+
 def page(title, body):
     return f"<!doctype html><html><head><meta charset=utf-8><title>{title}</title></head><body>{body}</body></html>"
 
@@ -190,6 +206,22 @@ ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(
             names = sorted(p.split("=", 1)[0].strip() for p in self.headers.get("Cookie", "").split(";") if p.strip())
             return self.send(200, page("Whoami", f"<h1>cookies: <span id=cookies>{' '.join(names) or '(none)'}</span></h1>"
                                                  f"<p>account: <span id=account>{self.account() or '(none)'}</span></p>"))
+        # snapshot fixture (docs/acceptance/snapshot.md). ?items=N sets the list length (default 2000)
+        if path == "/snapshot":
+            n = int(q.get("items", 2000))
+            items = "".join(f"<li>item {i}</li>" for i in range(n))
+            return self.send(200, page("Snapshot fixture", SNAPSHOT_PAGE
+                                       .replace("%ITEMS%", items).replace("%IDP%", IDP)
+                                       .replace("%BU%", FAKE_SECRETS["bu"]).replace("%SK%", FAKE_SECRETS["sk"])
+                                       .replace("%JWT%", FAKE_SECRETS["jwt"]).replace("%PLAIN32%", FAKE_SECRETS["plain32"])
+                                       .replace("%PASSWORD%", FAKE_SECRETS["password"])))
+        if path == "/snapshot/frame":
+            return self.send(200, page("frame", "<p>inside same-origin frame</p>"
+                                                "<button id=frame-btn onclick=\"fetch('/hit?what=iframe')\">Frame button</button>"))
+        if path == "/snapshot/secrets.json":
+            return self.send(200, json.dumps(FAKE_SECRETS), "application/json")
+        if path == "/hit":
+            return self.send(204, "", "text/plain")
         return self.send(404, page("404", "<h1>404</h1>"))
 
     # ---------------- idp ----------------
@@ -209,6 +241,8 @@ ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(
                     pending[token] = {**q, "user": user}
                 return self.send(303, "", headers=[("Location", f"/challenge?t={token}")])
             return self.finish_authorize(q, user)
+        if path == "/xframe":
+            return self.send(200, page("xframe", "<button onclick=\"fetch('/x')\">Cross-origin button</button>"))
         # fake "confirm it's you" — deliberately matches none of webkit-cli's built-in Google/captcha patterns
         if path == "/challenge":
             with lock:
@@ -239,6 +273,65 @@ ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(
         sep = "&" if "?" in ru else "?"
         # 303 so the POST becomes a GET on the app side
         self.send(303, "", headers=[("Location", f"{ru}{sep}code={code}&state={q.get('state', '')}")])
+
+
+SNAPSHOT_PAGE = """<nav><a href="/dashboard">Dashboard</a> <a href="/snapshot?items=0#top">This page</a></nav>
+<main>
+<h1>Snapshot fixture</h1>
+<div id=inserts></div>
+<h2>Controls</h2>
+<button id=hidden-btn style="display:none" onclick="fetch('/hit?what=hidden')">Hidden button</button>
+<button id=invisible-btn style="visibility:hidden">Invisible button</button>
+<button id=zero-btn style="width:0;height:0;padding:0;border:0;overflow:hidden">Zero button</button>
+<a id=aria-hidden-link href="/hit?what=aria-hidden" aria-hidden="true">Aria hidden link</a>
+<div inert><button id=inert-btn onclick="fetch('/hit?what=inert')">Inert button</button></div>
+<button id=disabled-btn disabled>Disabled button</button>
+<label><input type=checkbox id=agree checked> I agree</label>
+<label for=plan>Plan</label> <select id=plan><option value=free>Free</option><option value=team selected>Team</option><option value=ent>Enterprise</option></select>
+<button id=victim onclick="fetch('/hit?what=victim')">Victim button</button>
+<button id=remove-victim onclick="document.getElementById('victim').remove()">Remove victim</button>
+<button id=insert-above onclick="const b=document.createElement('button');b.textContent='Inserted '+(document.getElementById('inserts').children.length+1);b.onclick=()=>fetch('/hit?what=inserted');document.getElementById('inserts').prepend(b)">Insert above</button>
+<h2>Frames</h2>
+<iframe id=same-frame src="/snapshot/frame" width=300 height=80></iframe>
+<iframe id=cross-frame src="%IDP%/xframe" width=300 height=80></iframe>
+<div id=shadow-host></div>
+<script>
+const root = document.getElementById('shadow-host').attachShadow({mode: 'open'});
+root.innerHTML = '<p>inside shadow root</p><button id=shadow-btn>Shadow button</button>';
+root.getElementById('shadow-btn').onclick = () => fetch('/hit?what=shadow');
+</script>
+<h2>Dialog</h2>
+<button id=open-dialog onclick="document.getElementById('dlg').showModal()">Open dialog</button>
+<dialog id=dlg aria-label="Create key">
+  <label for=key-name>Key name</label> <input id=key-name placeholder="my key">
+  <button id=dialog-submit onclick="fetch('/hit?what=dialog-submit&name='+encodeURIComponent(document.getElementById('key-name').value));document.getElementById('dlg').close()">Create</button>
+  <button id=dialog-cancel onclick="document.getElementById('dlg').close()">Cancel</button>
+</dialog>
+<h2>Keys</h2>
+<table><tr><th>Name</th><th>Key</th></tr>
+<tr><td>browser-use</td><td id=bu-key>%BU%</td></tr>
+<tr><td>openai-ish</td><td>%SK%</td></tr>
+<tr><td>session</td><td>%JWT%</td></tr>
+<tr><td>word</td><td>internationalization</td></tr></table>
+<label for=plain>Token</label> <input id=plain readonly value="%PLAIN32%">
+<label for=pw>Password</label> <input id=pw type=password value="%PASSWORD%">
+<h2>React</h2><div id=react-root></div>
+<script src="/react.js"></script><script src="/react-dom.js"></script>
+<script>
+function Ticker() {
+  const [v, setV] = React.useState('');
+  const [tick, setTick] = React.useState(0);
+  React.useEffect(() => { const i = setInterval(() => setTick(t => t + 1), 500); return () => clearInterval(i) }, []);
+  return React.createElement('div', null,
+    React.createElement('label', {htmlFor: 'react-name'}, 'React name'),
+    React.createElement('input', {id: 'react-name', value: v, onChange: e => setV(e.target.value)}),
+    React.createElement('p', null, 'state: ', React.createElement('span', {id: 'react-state'}, v || '(empty)'),
+      ' renders: ', React.createElement('span', {id: 'renders', 'data-tick': tick}, tick > 0 ? 'many' : 'one')));
+}
+ReactDOM.createRoot(document.getElementById('react-root')).render(React.createElement(Ticker));
+</script>
+<h2>List</h2><ul id=big>%ITEMS%</ul>
+</main>"""
 
 
 def challenge_qs(q, lead="&"):
