@@ -1,0 +1,23 @@
+README.md
+  s_81ef76b733b16b::t_cc29cdbabbfc9d 132-133
+Sources/webkit-cli/Session.swift
+  s_81ef76b733b16b::t_fa5a68cc2ae41c 412,432
+Sources/webkit-cli/Snapshot.swift
+  s_81ef76b733b16b::t_97dcfaa76acda5 19-32,34-35,59-60,66-72,123-128,233-237,277-282,318-321
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "50ed4ff8700d2103e97977472743ae6b27f57ef9",
+  "prompts": {},
+  "sessions": {
+    "s_81ef76b733b16b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "af2bada9-9bf4-4224-8e84-7eee35c28325",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
