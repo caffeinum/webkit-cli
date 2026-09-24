@@ -80,7 +80,7 @@ Pass = 2 done, and 1 done once whenever a challenge happens (recorded here with 
 
 ## sign-off
 
-- [ ] E1–E12 green (QA)
-- [ ] README: show/hide/--escalate, invariant still stated
+- [x] E1–E12 green (QA, 8f18047; E10 by code review)
+- [x] README: show/hide/--escalate, invariant still stated (80c42fc)
 - [ ] B2 by aleks/personal; B1 recorded when it happens
 - [ ] webkit-pm signs off on beads-ivam
