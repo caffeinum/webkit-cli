@@ -66,7 +66,7 @@ Fixture page `/snapshot` on the local server, containing: nav + headings, a hidd
 | S6 | **secrets: shown by default, `--redact` opt-in** | default: every fake secret appears in full and verbatim (a grep for each → hit). The password is never shown, with or without flags. `--redact`: every fake secret is masked with len + hash, `internationalization` is **not** masked, a grep for each secret → 0 hits, different keys → different hashes, the same key → the same hash. Daemon log: 0 hits for any secret in both modes. |
 | S7 | **budget** | default output ≤ 8000 chars on the 2000-item page, ends with the truncation line, and the dialog + first interactive elements are still present. `--max-chars 100000` returns everything. |
 | S8 | **--json** | valid JSON, matches the README schema, same refs as the text form, `--redact` applied the same way. |
-| S9 | **speed** | a snapshot of the fixture page takes < 500 ms, and of a real public page (e.g. github.com) < 1.5 s. |
+| S9 | **speed** | on an already-loaded tab (time only the `snapshot` call, not `open`), the fixture page takes < 500 ms and a real public page (e.g. github.com/login) < 1.5 s. |
 | S10 | **regressions + `text` removal** | session-mode A1–A14 and escalate E1–E12 still green, with `text` steps swapped for `snapshot`. `text <tab>` and `text <url>` → exit 2 with the migration message. `rg -w 'text' --glob '!docs/acceptance/**'` over scripts/README/help finds no remaining calls to the command. `check.sh` passes. |
 | S11 | **public site** | on a public page with a real form (e.g. github.com/login, no submit): snapshot lists the username/password inputs and the sign-in button with sensible names. `type` a fake value into the username ref → a snapshot shows that value. Nothing gets submitted. |
 
