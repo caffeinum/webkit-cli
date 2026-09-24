@@ -409,6 +409,7 @@ func writePNG(_ data: Data, to url: URL) throws {
 private let clickJS = findJS + """
   const el = find(selector);
   if (!el) throw missing(selector);
+  reachable(el, selector);
   el.scrollIntoView({block: 'center'});
   const r = el.getBoundingClientRect();
   const at = {bubbles: true, cancelable: true, view: window, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, button: 0};
@@ -428,6 +429,7 @@ private let clickJS = findJS + """
 private let typeJS = findJS + """
   const el = find(selector);
   if (!el) throw missing(selector);
+  reachable(el, selector);
   el.focus();
   const win = el.ownerDocument.defaultView; // the element may live in a same-origin iframe
   const tag = el.tagName;

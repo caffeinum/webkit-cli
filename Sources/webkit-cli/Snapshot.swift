@@ -16,9 +16,23 @@ let findJS = """
     getComputedStyle(el).visibility !== 'hidden';
   const norm = s => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
   const label = el => norm(el.innerText || el.value || el.getAttribute('aria-label') || el.title);
-  const clickables = () => [...document.querySelectorAll(
+  const openModal = () => {
+    try { const d = document.querySelector('dialog:modal'); if (d) return d; } catch (e) {}
+    return [...document.querySelectorAll('[aria-modal="true"]')].find(visible) || null;
+  };
+  // what a person can't reach: inert subtrees, and everything outside an open modal dialog
+  const blocked = (el) => {
+    if (el.disabled || el.getAttribute('aria-disabled') === 'true') return 'disabled';
+    if (el.closest('[inert]')) return 'inert';
+    const m = el.ownerDocument === document ? openModal() : null;
+    if (m && !m.contains(el)) return 'behind an open modal dialog';
+    return null;
+  };
+  const shown = s => (s || '').replace(/\\s+/g, ' ').trim();
+  const candidates = () => [...document.querySelectorAll(
     'button, a, [role=button], [role=link], [role=menuitem], [role=option], [role=tab], input[type=submit], input[type=button], summary, label, [data-identifier], [onclick], [tabindex]'
-  )].filter(visible);
+  )].filter(el => visible(el) && !el.closest('[aria-hidden="true"]'));
+  const clickables = () => candidates().filter(el => !blocked(el));
   const refOf = sel => { const m = /^(?:ref=)?(e[0-9]+)$/.exec(sel.trim()); return m ? m[1] : null; };
   const deepRef = (root, ref) => {
     const hit = root.querySelector('[data-wk-ref="' + ref + '"]');
@@ -42,13 +56,20 @@ let findJS = """
     }
     if (!sel.startsWith('text=')) return document.querySelector(sel);
     const want = norm(sel.slice(5));
-    const all = clickables();
+    // blocked ones stay findable, so the caller hears *why* it can't click them
+    const all = candidates().sort((a, b) => (blocked(a) ? 1 : 0) - (blocked(b) ? 1 : 0));
     return all.find(el => label(el) === want)
       || all.filter(el => label(el).includes(want)).sort((a, b) => label(a).length - label(b).length)[0]
       || null;
   };
   const missing = sel => new Error('WKCLI: no element matches ' + sel + '. visible clickables: ' +
-    JSON.stringify([...new Set(clickables().map(label).filter(Boolean))].slice(0, 25)));
+    JSON.stringify([...new Set(clickables().map(el => shown(el.innerText || el.value || el.getAttribute('aria-label') || el.title)).filter(Boolean))].slice(0, 25)));
+  // a person couldn't do this, so neither do we
+  const reachable = (el, sel) => {
+    const why = blocked(el);
+    if (why) throw new Error('WKCLI: ' + sel + ' is ' + why + ' — a person could not reach it');
+    return el;
+  };
   """
 
 /// Arguments: startRef (Int), redactOn (Bool), maxChars (Int), asJSON (Bool).
@@ -99,8 +120,12 @@ let snapshotJS = #"""
     // a long run is a secret only if it mixes letters and digits (not a long word, not a long number)
     return /[A-Za-z]/.test(t) && /[0-9]/.test(t) && !/^[a-z]+$/.test(t);
   };
-  const redact = (s) => !redactOn ? s : s.replace(SECRET, (t) =>
-    looksSecret(t) ? `‹redacted len=${t.length} #${sha256hex(t).slice(0, 8)}›` : t);
+  const mask = (t) => `‹redacted len=${t.length} #${sha256hex(t).slice(0, 8)}›`;
+  const redact = (s) => !redactOn ? s : s.replace(SECRET, (t) => {
+    const kv = /^([A-Za-z_][A-Za-z0-9_\-]*=)(.+)$/.exec(t);   // token=sk-… : keep the key, mask the value
+    if (kv && looksSecret(kv[2])) return kv[1] + mask(kv[2]);
+    return looksSecret(t) ? mask(t) : t;
+  });
   const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
 
   // --- visibility
@@ -205,6 +230,11 @@ let snapshotJS = #"""
   };
 
   const dialogs = [];
+  let modalEl = null;
+  try { modalEl = document.querySelector('dialog:modal'); } catch (e) {}
+  if (!modalEl) modalEl = [...document.querySelectorAll('[aria-modal="true"]')].find(el => !hiddenStyle(el)) || null;
+  let behindCount = 0;
+  const behindModal = (el) => modalEl && el.ownerDocument === document && !modalEl.contains(el);
   const isDialog = (el, role) => role === 'dialog' || role === 'alertdialog' || (el.tagName === 'DIALOG' && el.open);
 
   const walk = (node, out) => {
@@ -244,7 +274,12 @@ let snapshotJS = #"""
       return;
     }
     if (noBox(el) && !el.shadowRoot && tag !== 'DETAILS') return;
-    if (isAction(el, role)) { if (!emptyBox(el)) out.push(actionNode(el, role)); return; }
+    if (isAction(el, role)) {
+      if (emptyBox(el)) return;
+      if (behindModal(el)) { behindCount++; return; }
+      out.push(actionNode(el, role));
+      return;
+    }
     const h = /^H([1-6])$/.exec(tag);
     if (h || role === 'heading') {
       const level = h ? +h[1] : +(el.getAttribute('aria-level') || 2);
@@ -280,8 +315,10 @@ let snapshotJS = #"""
 
   const top = [];
   walk(document.body || document.documentElement, top);
-  // modal dialogs first, then the page, then non-modal dialogs
-  const roots = [...dialogs.filter(d => d.modal), ...top, ...dialogs.filter(d => !d.modal)];
+  // modal dialogs first, then the page, then non-modal dialogs. While a modal is open the page behind it
+  // can't be used, so it collapses to one line (its refs stay stamped and work again once it closes).
+  const page = modalEl ? [{ kind: 'text', text: `[${behindCount} elements behind the modal dialog]`, row: true }] : top;
+  const roots = [...dialogs.filter(d => d.modal), ...page, ...dialogs.filter(d => !d.modal)];
 
   // merge adjacent text lines inside a parent (keeps output compact)
   const merge = (list) => {
