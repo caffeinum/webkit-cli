@@ -93,6 +93,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
   }
 
   func close() {
+    failRunningJS(CLIError("tab was closed while the script ran"))
     ownedPopups.forEach { $0.close() }
     ownedPopups = []
     finishLoad(.failure(CLIError("tab was closed")))
@@ -170,6 +171,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
 
   func webViewWebContentProcessDidTerminate(_ w: WKWebView) {
     lastFailure = "web content process crashed"
+    failRunningJS(CLIError("the page's web content process crashed while the script ran"))
     finishLoad(.failure(CLIError("the page's web content process crashed")))
   }
 
@@ -218,21 +220,45 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     return try await callJS(wrapped) as? String
   }
 
+  private static let navigatedAway = CLIError("""
+    the page navigated away before the script finished. Split steps that change page: \
+    `click <tab> …` then `wait <tab> --until-url …`
+    """)
+
+  /// Scripts in flight. A cross-document navigation destroys their context and WebKit may never call
+  /// back, so a commit fails them all at once instead of letting them hang until --timeout.
+  private var runningJS: [UUID: CheckedContinuation<Any?, Error>] = [:]
+
   func callJS(_ body: String, _ args: [String: Any] = [:]) async throws -> Any? {
-    do {
-      return try await web.callAsyncJavaScript(body, arguments: args, in: nil, contentWorld: .page)
-    } catch let error as NSError {
-      if let msg = error.userInfo["WKJavaScriptExceptionMessage"] as? String {
-        throw CLIError("javascript error: \(msg)")
+    try await withCheckedThrowingContinuation { (c: CheckedContinuation<Any?, Error>) in
+      let id = UUID()
+      runningJS[id] = c
+      web.callAsyncJavaScript(body, arguments: args, in: nil, in: .page) { [weak self] result in
+        guard let c = self?.runningJS.removeValue(forKey: id) else { return }
+        switch result {
+        case .success(let value):
+          c.resume(returning: value is NSNull ? nil : value)
+        case .failure(let error as NSError):
+          if let msg = error.userInfo["WKJavaScriptExceptionMessage"] as? String {
+            c.resume(throwing: CLIError("javascript error: \(msg)"))
+          } else if error.localizedDescription.contains("no longer reachable") {
+            c.resume(throwing: Browser.navigatedAway)
+          } else {
+            c.resume(throwing: CLIError("javascript failed: \(error.localizedDescription)"))
+          }
+        }
       }
-      if error.localizedDescription.contains("no longer reachable") {
-        throw CLIError("""
-          the page navigated away before the script finished. Split steps that change page: \
-          `click <tab> …` then `wait <tab> --until-url …`
-          """)
-      }
-      throw CLIError("javascript failed: \(error.localizedDescription)")
     }
+  }
+
+  private func failRunningJS(_ error: CLIError) {
+    let running = runningJS
+    runningJS = [:]
+    running.values.forEach { $0.resume(throwing: error) }
+  }
+
+  func webView(_ w: WKWebView, didCommit _: WKNavigation!) {
+    failRunningJS(Browser.navigatedAway)
   }
 
   func snapshotPNG() async throws -> (data: Data, width: Int, height: Int) {

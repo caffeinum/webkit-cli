@@ -19,6 +19,7 @@ struct Request: Codable {
 struct Response: Codable {
   var ok: Bool
   var output: String?
+  var notes: [String]?
   var error: String?
   var code: Int32?
 }
@@ -35,6 +36,8 @@ final class Engine {
   let keepsTabs: Bool
   private var tabs: [String: Browser] = [:]
   private var openers: [String: String] = [:]
+  /// Hints for the caller's stderr, collected during the current request.
+  private(set) var notes: [String] = []
 
   init(profile: Profile, keepsTabs: Bool) {
     self.profile = profile
@@ -42,6 +45,7 @@ final class Engine {
   }
 
   func handle(_ r: Request) async throws -> String {
+    notes = []
     let deadline = Date().addingTimeInterval(r.timeout)
     switch r.cmd {
     case "open":
@@ -86,7 +90,7 @@ final class Engine {
       return try await withTarget(r) { tab in
         if let json = try await tab.evalJSON(js) { return json }
         if !js.contains("return") {
-          printErr("webkit-cli: note: result was undefined — eval runs your code as an async function body, so use `return <value>`")
+          notes.append("result was undefined — eval runs your code as an async function body, so use `return <value>`")
         }
         return "null"
       }
@@ -135,6 +139,12 @@ final class Engine {
     }
   }
 
+  /// Where a tab is right now, for error messages.
+  func location(of target: String?) -> String? {
+    guard let target, let tab = tabs[target] else { return nil }
+    return tab.web.url?.absoluteString
+  }
+
   func closeAll() {
     for id in Array(tabs.keys) { closeTab(id) }
   }
@@ -155,7 +165,7 @@ final class Engine {
     tab.onPopup = { [weak self] popup in
       guard let self else { return }
       let popupID = self.register(popup, opener: id)
-      printErr("webkit-cli: tab \(id) opened popup \(popupID)")
+      self.notes.append("tab \(id) opened popup \(popupID)")
     }
     tab.onPageClose = { [weak self] in self?.closeTab(id) }
     return id
@@ -173,7 +183,7 @@ final class Engine {
     }
     guard let tab = tabs[target] else {
       let open = tabs.keys.sorted().joined(separator: ", ")
-      throw CLIError("no tab \(target) in this session (open: \(open.isEmpty ? "none" : open)) — sessions end after being idle; `webkit-cli tabs` lists them")
+      throw CLIError("no tab \(target) in this session (open: \(open.isEmpty ? "none" : open)) — the session was restarted or expired since; `webkit-cli tabs` lists live tabs")
     }
     return (target, tab)
   }
@@ -203,7 +213,12 @@ final class Engine {
       } ?? true
       var selectorOK = true
       if idle, urlOK, let sel = r.untilSelector {
-        selectorOK = (try? await tab.callJS("return !!document.querySelector(selector)", ["selector": sel]) as? Bool) ?? false
+        let found = try await tab.callJS(
+          "try { return !!document.querySelector(selector) } catch (e) { return 'invalid' }", ["selector": sel])
+        if found as? String == "invalid" {
+          throw CLIError("--until-selector is not a valid CSS selector: \(sel)", code: ExitCode.usage)
+        }
+        selectorOK = found as? Bool ?? false
       }
       if idle && urlOK && selectorOK { return }
       if Date() > deadline { throw timeoutError(r, url: tab.web.url?.absoluteString) }
@@ -213,7 +228,7 @@ final class Engine {
 
   private func timeoutError(_ r: Request, url: String? = nil) -> CLIError {
     let at = url.map { " (tab is at \($0))" } ?? ""
-    return CLIError("\(r.cmd) timed out after \(Int(r.timeout))s\(at) — raise with --timeout", code: ExitCode.timeout)
+    return CLIError("\(r.cmd) timed out after \(Int(r.timeout.rounded(.up)))s\(at) — raise with --timeout", code: ExitCode.timeout)
   }
 
   private func settle(_ seconds: Double) async throws {

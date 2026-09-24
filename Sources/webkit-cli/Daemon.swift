@@ -159,8 +159,10 @@ final class SessionServer {
     lastActivity = Date()
     var stopAfter = false
     let resp: Response
+    var request: Request?
     do {
       let req = try JSONDecoder().decode(Request.self, from: data)
+      request = req
       if req.cmd == "stop" {
         stopAfter = true
         resp = Response(ok: true, output: try jsonString(["stopped": account]))
@@ -176,10 +178,14 @@ final class SessionServer {
         var inTime = req
         inTime.timeout = req.timeout - queued
         let output = try await withTimeout(inTime.timeout, cmd: req.cmd) { try await self.engine.handle(inTime) }
-        resp = Response(ok: true, output: output)
+        resp = Response(ok: true, output: output, notes: engine.notes.isEmpty ? nil : engine.notes)
       }
     } catch let e as CLIError {
-      resp = Response(ok: false, error: e.message, code: e.code)
+      var message = e.message
+      if e.code == ExitCode.timeout, let target = request?.target, let url = engine.location(of: target), !message.contains(url) {
+        message += " — \(target) is at \(url)"
+      }
+      resp = Response(ok: false, error: message, code: e.code)
     } catch {
       resp = Response(ok: false, error: "\(error)", code: ExitCode.failure)
     }
@@ -236,7 +242,7 @@ func withTimeout(_ seconds: Double, cmd: String, _ body: @escaping @MainActor ()
       MainActor.assumeIsolated {
         if !done {
           done = true
-          c.resume(throwing: CLIError("\(cmd) timed out after \(Int(seconds))s (raise with --timeout)", code: ExitCode.timeout))
+          c.resume(throwing: CLIError("\(cmd) timed out after \(Int(seconds.rounded(.up)))s (raise with --timeout)", code: ExitCode.timeout))
         }
       }
     }

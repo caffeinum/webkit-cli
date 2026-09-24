@@ -43,6 +43,7 @@ func runWithoutApp(_ command: Command) throws -> Bool {
     if account != defaultAccount { _ = try Accounts.load().id(of: account) }
     let resp = try SessionClient.send(request, account: account, idle: options.idle)
     guard resp.ok else { throw CLIError(resp.error ?? "session command failed", code: resp.code ?? ExitCode.failure) }
+    resp.notes?.forEach { printErr("webkit-cli: note: \($0)") }
     try emit(resp.output ?? "", options)
   default:
     return false
@@ -77,7 +78,9 @@ func run(_ command: Command, _ opts: Options) async throws {
       throw CLIError("the throwaway profile `-` has no session, so no tabs — pass a URL, or use a saved profile", code: ExitCode.usage)
     }
     let engine = Engine(profile: try await Profile.open("-"), keepsTabs: false)
-    try emit(try await engine.handle(request), opts)
+    let output = try await engine.handle(request)
+    engine.notes.forEach { printErr("webkit-cli: note: \($0)") }
+    try emit(output, opts)
   case .serve(let account, let idle):
     guard try SessionServer.claim(account) else {
       printErr("webkit-cli: a session for '\(account)' is already running")
