@@ -8,6 +8,9 @@ owner: webkit-pm · dev: webkit-cli · qa: webkit-qa · final run: personal / al
 
 **invariant kept from session mode:** without `show` or `--escalate`, no window ever appears. Escalation is always opt-in.
 
+
+> **once `snapshot` ships (beads-i1do), `text` is removed:** read every `text` step below as `snapshot` (tab or url form). A11's one-shot check becomes `snapshot example.com --account -`. Selectors spelled `'text=…'` are unaffected.
+
 ## surface (proposed, dev may adjust names, and records any change here)
 
 - `webkit-cli show <tab> [--reason "<text>"]` moves the live web view into a normal window with the auth bar: the reason (default "Finish this step, then click Done."), the live URL, and a **Done** button. It returns right away with `{"tab","shown":true}`.

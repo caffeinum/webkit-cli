@@ -6,6 +6,9 @@ owner: webkit-pm · dev: webkit-cli · qa: webkit-qa · final run: personal (on 
 
 sign-off needs every part-A scenario green (QA runs them, logs attached to the bead) plus part B run once by personal.
 
+
+> **once `snapshot` ships (beads-i1do), `text` is removed:** read every `text` step below as `snapshot` (tab or url form). A11's one-shot check becomes `snapshot example.com --account -`. Selectors spelled `'text=…'` are unaffected.
+
 ## ground rules (apply to every scenario)
 
 - build with `--scratch-path` outside `.build` if `pgrep -fl webkit-cli` shows aleks's `auth` running. Use `BIN=...`.
