@@ -86,7 +86,12 @@ func element(_ key: String, in window: AXUIElement) -> AXUIElement {
   fail("no element with DOM id or button title '\(key)' in the visible window")
 }
 
+// mouse events go through the HID tap to whatever is under the cursor, so only click while the
+// target process is frontmost — a click must never land in the person's own app
 func mouseClick(_ el: AXUIElement) {
+  guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
+    fail("pid \(pid) is not frontmost; not clicking (the person may be using another app)")
+  }
   guard let f = frame(el) else { fail("element has no frame") }
   let pt = CGPoint(x: f.midX, y: f.midY)
   for type in [CGEventType.leftMouseDown, .leftMouseUp] {
