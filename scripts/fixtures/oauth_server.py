@@ -5,7 +5,8 @@ Two origins on 127.0.0.1: app (default :8765) and idp (default :8766).
 Usage: scripts/fixtures/oauth_server.py [app_port] [idp_port]
 ?challenge=1 on /signin or /signin-popup makes the idp insert a fake "confirm it's you" step
 (idp /challenge: #code + Continue) between login and callback.
-Request log (method, path, cookie *names* only) → stderr.
+Request log → stderr: method, path, query/cookie *names* only. Never values or bodies: a person may type
+real input into a shown window. Clicks recorded by /hit are kept in memory only (GET /hit/log).
 """
 import http.server, json, secrets, sys, threading, time, urllib.parse as up, urllib.request, os
 
@@ -20,6 +21,7 @@ REACT = {
 CACHE = os.path.join(os.environ.get("TMPDIR", "/tmp"), "webkit-cli-fixture-react")
 
 codes, sessions, pending, lock = {}, {}, {}, threading.Lock()
+hits = []  # /hit query dicts, memory only
 
 
 def fake_token(alphabet, n):
@@ -56,7 +58,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         names = [p.split("=", 1)[0].strip() for p in self.headers.get("Cookie", "").split(";") if p.strip()]
-        sys.stderr.write(f"{time.strftime('%H:%M:%S')} {self.role} {self.command} {self.path} cookies={names}\n")
+        u = up.urlparse(self.path)
+        keys = [k for k, _ in up.parse_qsl(u.query, keep_blank_values=True)]
+        query = "?" + "&".join(keys) if keys else ""
+        sys.stderr.write(f"{time.strftime('%H:%M:%S')} {self.role} {self.command} {u.path}{query} cookies={names}\n")
 
     def send(self, status, body=b"", ctype="text/html; charset=utf-8", headers=()):
         if isinstance(body, str):
@@ -221,7 +226,12 @@ ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(
         if path == "/snapshot/secrets.json":
             return self.send(200, json.dumps(FAKE_SECRETS), "application/json")
         if path == "/hit":
+            with lock:
+                hits.append(q)
             return self.send(204, "", "text/plain")
+        if path == "/hit/log":
+            with lock:
+                return self.send(200, json.dumps(hits), "application/json")
         return self.send(404, page("404", "<h1>404</h1>"))
 
     # ---------------- idp ----------------
