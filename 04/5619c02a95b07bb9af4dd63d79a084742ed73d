@@ -1,0 +1,40 @@
+Sources/webkit-cli/Browser.swift
+  s_81ef76b733b16b::t_87fadff099e476 248-249
+  s_81ef76b733b16b::t_703c0f68827a2c 95-96,98,236-238
+Sources/webkit-cli/Daemon.swift
+  s_81ef76b733b16b::t_87fadff099e476 239-241
+Sources/webkit-cli/Session.swift
+  s_81ef76b733b16b::t_87fadff099e476 299
+docs/acceptance/session-mode.md
+  s_a8bd41ef0dd6a8::t_3ea104427b0307 28
+scripts/browser-use-apikey.sh
+  s_81ef76b733b16b::t_703c0f68827a2c 58,80-83,86-89,93,99,101-104
+  s_81ef76b733b16b::t_422b0423ce764b 84-85,92
+Sources/webkit-cli/CLI.swift
+  s_81ef76b733b16b::t_87fadff099e476 20,162-164
+  s_81ef76b733b16b::t_c779db33318048 165-166
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "045619c02a95b07bb9af4dd63d79a084742ed73d",
+  "prompts": {},
+  "sessions": {
+    "s_81ef76b733b16b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "af2bada9-9bf4-4224-8e84-7eee35c28325",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    },
+    "s_a8bd41ef0dd6a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "04b43812-8019-4e2a-bbd8-6ea8db222177",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
