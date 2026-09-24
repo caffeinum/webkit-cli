@@ -11,6 +11,12 @@ owner: webkit-pm · dev: webkit-cli · qa: webkit-qa · final run: personal / al
 
 > **once `snapshot` ships (beads-i1do), `text` is removed:** read every `text` step below as `snapshot` (tab or url form). A11's one-shot check becomes `snapshot example.com --account -`. Selectors spelled `'text=…'` are unaffected.
 
+## focus (aleks, 2026-09-23: "it can steal focus, and yes keep testing")
+
+- `show` activates webkit-cli and makes the window key, so the user can type right away. On hide, focus goes back to the app that was frontmost before `show` (ESC-1).
+- the fixture never logs request bodies or input values, only paths and field names.
+- optional test hook `WEBKIT_CLI_SHOW_OFFSCREEN=1` (the real show/hide path, frame kept off-screen): nice for fast non-visual checks, not required.
+
 ## surface (proposed, dev may adjust names, and records any change here)
 
 - `webkit-cli show <tab> [--reason "<text>"]` moves the live web view into a normal window with the auth bar: the reason (default "Finish this step, then click Done."), the live URL, and a **Done** button. It returns right away with `{"tab","shown":true}`.
@@ -30,7 +36,7 @@ QA drives the human part with an AX/CGEvent helper (or `osascript`) that types i
 
 | # | scenario | pass |
 |---|---|---|
-| E1 | **show/hide keeps state** | `open` → `eval 'window.__m=42'` → `show` → window visible, on-screen, key window, URL bar right → `hide` → `eval 'return window.__m'` = 42. No reload (fixture log: 1 GET). Same tab id throughout. |
+| E1 | **show/hide keeps state** | `open` → `eval 'window.__m=42'` → `show` → window visible, on-screen, key window, webkit-cli active, URL bar right → `hide` → `eval 'return window.__m'` = 42. No reload (fixture log: 1 GET). Same tab id throughout. |
 | E2 | **headless after hide** | after `show`/`hide`: `visibilityState` = `"visible"`, rAF > 0 over 1s, no on-screen webkit-cli window (the windows.swift helper → 0), no Dock icon left behind. |
 | E3 | **human completes, script carries on** | `click $t 'text=Continue with IdP' --escalate --challenge-url '/challenge'` → window opens, stderr "needs you" line → helper types code + submits in the window → window closes by itself → command exits 0 → `wait --until-selector '#welcome'` → "welcome qa". Fixture log: exactly one /callback. |
 | E4 | **Done / ⌘W / close button** | each of the three hides the tab and doesn't close it (`tabs` still lists it, `text` works). `wait --until-hidden` returns 0 on each. After any hide, **keyboard focus goes back to the app that was frontmost before `show`**. The helper checks the frontmost app's pid, and typing lands there with no click needed. |
