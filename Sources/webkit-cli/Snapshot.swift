@@ -238,7 +238,7 @@ let snapshotJS = #"""
       } else {
         let origin = '?';
         try { origin = new URL(el.src, location.href).origin; } catch (e) {}
-        out.push({ kind: 'text', text: `[iframe cross-origin ${origin}]` });
+        out.push({ kind: 'text', text: `[iframe cross-origin ${origin}]`, alone: true });
       }
       return;
     }
@@ -256,12 +256,15 @@ let snapshotJS = #"""
       const hasAction = cells.some(c => c.querySelector('a[href],button,input,select,textarea,[role=button],[role=link]'));
       if (!hasAction) {
         const t = cells.map(c => clean(c.innerText)).filter(Boolean).join('  ');
-        if (t) out.push({ kind: 'text', text: redact(t) });
+        if (t) out.push({ kind: 'text', text: redact(t), row: true });
         return;
       }
     }
-    // a <label> for a listed control is already that control's name
-    if (tag === 'LABEL' && el.control && !hiddenStyle(el.control) && !el.contains(el.control)) return;
+    // a <label>'s text is already its control's name: list only the control
+    if (tag === 'LABEL' && el.control && !hiddenStyle(el.control)) {
+      if (el.contains(el.control)) visit(el.control, out);
+      return;
+    }
     if (tag === 'IMG') { const alt = clean(el.alt); if (alt) out.push({ kind: 'text', text: `[img] ${redact(alt)}` }); return; }
     const lm = LANDMARK[tag] || LANDMARK_ROLES[role];
     if (lm) {
@@ -285,7 +288,8 @@ let snapshotJS = #"""
     for (const n of list) {
       if (n.children) n.children = merge(n.children);
       const prev = out[out.length - 1];
-      if (n.kind === 'text' && prev && prev.kind === 'text' && (prev.text.length + n.text.length) < 160 && !n.text.startsWith('[iframe')) {
+      if (n.kind === 'text' && prev && prev.kind === 'text' && !n.row && !prev.row && !n.alone && !prev.alone &&
+          (prev.text.length + n.text.length) < 160) {
         prev.text += ' ' + n.text;
       } else out.push(n);
     }
@@ -320,16 +324,20 @@ let snapshotJS = #"""
   flatten(tree, 0, false, null);
 
   const header = [document.title || '(untitled)', location.href];
-  const size = () => header.join('\n').length + flat.filter(e => e.keep).reduce((a, e) => a + e.text.length + 1, 0);
+  let size = header.join('\n').length + flat.reduce((a, e) => a + e.text.length + 1, 0);
+  const liveChildren = new Map();
+  for (const e of flat) if (e.parent) liveChildren.set(e.parent, (liveChildren.get(e.parent) || 0) + 1);
   let truncated = false, droppedEls = 0, droppedChars = 0;
   for (const prio of [2, 1]) {
-    for (let i = flat.length - 1; i >= 0 && size() > maxChars - 80; i--) {
+    for (let i = flat.length - 1; i >= 0 && size > maxChars - 80; i--) {
       const e = flat[i];
       if (!e.keep || e.prio !== prio) continue;
-      if (e.n.children && flat.some(c => c.parent === e && c.keep)) continue; // drop a group only once it's empty
+      if (liveChildren.get(e)) continue; // drop a group only once it's empty
       e.keep = false; truncated = true;
+      size -= e.text.length + 1;
       droppedChars += e.text.length + 1;
-      if (e.n.kind === 'action') droppedEls++;
+      droppedEls++;
+      if (e.parent) liveChildren.set(e.parent, liveChildren.get(e.parent) - 1);
     }
   }
 

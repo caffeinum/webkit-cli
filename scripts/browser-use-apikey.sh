@@ -97,7 +97,7 @@ if url | grep -Eq "$SIGNED_OUT_RE"; then
       break
     fi
     if url "$cur" 2>/dev/null | grep -Eq "$PROVIDER_URL_RE"; then
-        page=$("$W" text "$cur")
+        page=$("$W" eval "$cur" 'return document.body.innerText' --raw)
         if echo "$page" | grep -Eqi "verify it.s you|confirm it.s you|enter your password|passkey|2-step|use your phone"; then
           if [ "${ESCALATE:-0}" = 1 ]; then
             # the same live tab pops up; the person clears Google's check, clicks Done, we carry on headless

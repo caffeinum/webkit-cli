@@ -41,7 +41,7 @@ webkit-cli click <tab> <selector>       click; waits for any navigation it start
 webkit-cli type <tab> <selector> <text> set an input's value (React-safe); the text is never echoed
 webkit-cli wait <tab> [--until-url <regex>] [--until-selector <css>]
 webkit-cli goto <tab> <url>             navigate an open tab
-webkit-cli text <tab|url>               innerText
+webkit-cli snapshot <tab|url>           what's on the page: text, headings, and every action with a ref
 webkit-cli eval <tab|url> '<js>'        JS as an async function body → JSON result
 webkit-cli shot <tab|url> <out.png>     1280×800 viewport screenshot (2× on Retina, mode 0600)
 webkit-cli tabs                         open tabs; popups show up as their own tabs
@@ -56,15 +56,15 @@ webkit-cli doctor                       check that headless pages really render
 --wait <sec>            settle time after a load/click (open/goto/one-shot 3, click 1, others 0)
 --timeout <sec>         give up and exit 3 (default 60, counted from when the command reaches the session)
 --until-url / --until-selector   conditions for `wait`
---out <file>            write eval/text output to a 0600 file, print only {"written","bytes"}
+--out <file>            write eval/snapshot output to a 0600 file, print only {"written","bytes"}
 --raw                   eval: print a string result without JSON quotes
 --idle <sec>            idle timeout for the session this command starts (default 900)
 ```
 
 - **One shared default profile.** Every command uses the profile named `main` unless you pass `--account`. `main` is created on first use. A named profile is only created by `auth`, so a typo in `--account` fails instead of silently giving you a logged-out profile.
 - **Tabs live between commands.** The first command for a profile starts a background session process for it, reached over a unix socket in `~/.config/webkit-cli/run/` (dir 0700, socket 0600). `open` returns a tab id like `t3f9a2c`, and later commands act on that live tab, so a click that navigates to another site (OAuth) doesn't kill anything. The session exits after `--idle` seconds with no commands (default 15 min) or on `stop`. Commands for one profile run one at a time, in order.
-- **A URL instead of a tab** (`text`, `eval`, `shot`) loads it in a temporary tab, acts, and closes the tab.
-- `<selector>` is CSS, or `text=<words>` to match a visible button, link or option by its text (exact first, then the shortest containing match). When nothing matches, the error lists the visible clickable texts.
+- **A URL instead of a tab** (`snapshot`, `eval`, `shot`) loads it in a temporary tab, acts, and closes the tab.
+- `<selector>` is a snapshot ref (`e7`), CSS, or `text=<words>` to match a visible button, link or option by its text (exact first, then the shortest containing match). When nothing matches, the error lists the visible clickable texts.
 - A URL without a scheme gets `https://`, so `google.com` means `https://google.com`.
 - Exit codes: `0` ok, `1` error, `2` usage, `3` timeout. Errors go to stderr.
 
@@ -82,7 +82,7 @@ webkit-cli auth vercel.com --account work   # a second, separate identity
 ### Then run headless
 
 ```sh
-webkit-cli text https://railway.com/account/tokens           # one-shot
+webkit-cli snapshot https://railway.com/account/tokens       # one-shot
 webkit-cli eval https://github.com/settings/tokens 'return document.title'
 
 tab=$(webkit-cli open https://cloud.browser-use.com/signin | jq -r .tab)
@@ -108,12 +108,40 @@ webkit-cli eval $tab '
   return document.querySelector("[role=dialog]")?.innerText'
 ```
 
+### Snapshot: read the page, act by ref
+
+```sh
+$ webkit-cli snapshot $tab
+Sign in to GitHub · GitHub
+https://github.com/login
+[e1] link "Skip to content" → /login#start-of-content
+[main]
+  # Sign in to GitHub
+  [form]
+    [e2] input text "Username or email address" value="" required
+    [e3] input password "Password" value=‹password› required
+    [e4] link "Forgot password?" → /password_reset
+    [e5] button "Sign in"
+…
+$ webkit-cli type $tab e2 'me@example.com'
+$ webkit-cli click $tab e5
+```
+
+- It lists headings, landmarks (`[nav]`, `[main]`, `[form]`…), readable text, and every interactive element with its accessible name, value and state (disabled, required, expanded, `[x]`/`[ ]` checkboxes, a select's value and options, a link's `→ target`). Only visible things are listed: `display:none`, `visibility:hidden`, zero-size, `aria-hidden` and `inert` elements are skipped.
+- **Refs** (`e7`, or `ref=e7`) work wherever `click`, `type` and `wait --until-selector` take a selector. An element keeps its ref across snapshots. Ref numbers are never reused within a tab, not even after navigating. So if the element is gone you get `stale ref e7: page changed since the snapshot — take a new one` (exit 1), never a click on something else. The ref is stamped on the element as a `data-wk-ref` attribute.
+- Open dialogs get their own `[dialog "…"]` block, first when modal. Same-origin iframes and open shadow roots are walked, and their refs work. Cross-origin iframes show as `[iframe cross-origin <origin>]`.
+- `type <ref> <text>` on a `<select>` picks the option by label, then by value. `click` on a checkbox toggles it.
+- **Values are shown as they are**, API keys included (reading them is the point). `--redact` masks secret-looking values as `‹redacted len=N #sha8›`: known prefixes (`sk-`, `bu_`, `ghp_`, `github_pat_`, `xoxb-`, `AKIA`, JWTs, UUID tokens) and any ≥ 24-char run that mixes letters and digits. The hash is computed in the page, so a masked value never leaves it. **Password inputs are never shown**, with or without `--redact`.
+- `--max-chars` (default 8000) is the budget. Text is cut first, then interactive elements. Dialogs are never cut. It ends with `… truncated: N more elements, M chars`.
+- `--json`: `{"title", "url", "truncated", "nodes": [...]}`. Each node has a `role` (`button`, `link`, `input text`, `checkbox`, `select`, …, or `heading`, `text`, and group roles like `nav`/`main`/`form`/`dialog`/`iframe`) and a `name`. Actionable nodes add `ref` and, when present, `value`, `checked`, `options`, `placeholder`, `href` and `state` (a list). Headings add `level`. Groups add `children` (and `modal` for dialogs).
+- `text` was removed. Use `snapshot`, or `eval <tab> 'return document.body.innerText'` for raw text.
+
 ### When a person is needed
 
 ```sh
 webkit-cli show $tab --reason "Approve the 2FA prompt, then click Done"   # that live tab, on screen
 webkit-cli wait $tab --until-hidden --timeout 600                          # until they click Done
-webkit-cli text $tab                                                       # back headless, same page state
+webkit-cli snapshot $tab                                                   # back headless, same page state
 
 webkit-cli click $tab 'text=Continue' --escalate          # pops up only if it lands on a challenge page
 webkit-cli wait  $tab --until-url dashboard --escalate --human-timeout 300
