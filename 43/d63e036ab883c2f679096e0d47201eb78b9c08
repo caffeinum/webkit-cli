@@ -1,0 +1,19 @@
+docs/acceptance/snapshot.md
+  s_a8bd41ef0dd6a8::t_5f296415ed9162 84-85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "43d63e036ab883c2f679096e0d47201eb78b9c08",
+  "prompts": {},
+  "sessions": {
+    "s_a8bd41ef0dd6a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "04b43812-8019-4e2a-bbd8-6ea8db222177",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
