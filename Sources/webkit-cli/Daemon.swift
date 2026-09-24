@@ -51,19 +51,35 @@ enum SessionClient {
 
   private static func exchange(_ fd: Int32, _ req: Request) throws -> Response {
     defer { close(fd) }
-    var tv = timeval(tv_sec: Int(req.timeout) + 15, tv_usec: 0)
+    // a human may be working in a shown tab on top of the machine time
+    let human = req.escalate == true ? (req.humanTimeout ?? defaultHumanTimeout) : 0
+    var tv = timeval(tv_sec: Int(req.timeout + human) + 15, tv_usec: 0)
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
     var line = try JSONEncoder().encode(req)
     line.append(0x0A)
     // no shutdown(SHUT_WR): the session reads one line, and a half-closed socket would look like a
     // client that hung up (POLLHUP), which is how it spots Ctrl-C'd callers still in the queue
     try writeAll(fd, line)
-    let data = try readAll(fd)
-    guard !data.isEmpty else { throw CLIError("session process closed the connection without answering (crashed? see its log)") }
-    do {
-      return try JSONDecoder().decode(Response.self, from: data)
-    } catch {
-      throw CLIError("unreadable answer from session process: \(String(decoding: data.prefix(200), as: UTF8.self))")
+    // the session streams {"note": …} lines while it works, then one Response line
+    var buffer = Data()
+    while true {
+      while let nl = buffer.firstIndex(of: 0x0A) {
+        let line = buffer[buffer.startIndex..<nl]
+        buffer = Data(buffer[buffer.index(after: nl)...])
+        if let note = try? JSONDecoder().decode(Note.self, from: line) {
+          printErr("webkit-cli: \(note.note)")
+          continue
+        }
+        do {
+          return try JSONDecoder().decode(Response.self, from: line)
+        } catch {
+          throw CLIError("unreadable answer from session process: \(String(decoding: line.prefix(200), as: UTF8.self))")
+        }
+      }
+      guard let chunk = try readChunk(fd) else {
+        throw CLIError("session process closed the connection without answering (crashed? see its log)")
+      }
+      buffer.append(chunk)
     }
   }
 
@@ -178,6 +194,16 @@ final class SessionServer {
     active += 1
     lastActivity = Date()
     let call = Call(fd: fd, data: data)
+    // control commands skip the queue: a person must be able to hide/list/stop while a command
+    // waits (possibly for minutes) on that person
+    if let cmd = call.request?.cmd, ["show", "hide", "tabs", "stop"].contains(cmd) {
+      Task { @MainActor in
+        await self.serve(call)
+        self.active -= 1
+        self.lastActivity = Date()
+      }
+      return
+    }
     if let req = call.request, req.cmd != "stop" {
       // --timeout counts from arrival: a request still queued when it runs out is answered and dropped
       DispatchQueue.main.asyncAfter(deadline: .now() + req.timeout) {
@@ -218,10 +244,13 @@ final class SessionServer {
     }
     let resp: Response
     do {
-      var inTime = req
-      inTime.timeout = req.timeout - Date().timeIntervalSince(call.arrived)
-      let output = try await withTimeout(inTime.timeout, cmd: req.cmd) { try await self.engine.handle(inTime) }
-      resp = Response(ok: true, output: output, notes: engine.notes.isEmpty ? nil : engine.notes)
+      let deadline = Deadline(req.timeout - Date().timeIntervalSince(call.arrived))
+      let output = try await withDeadline(deadline, cmd: req.cmd, timeout: req.timeout) {
+        try await Engine.$noteSink.withValue({ call.send(note: $0) }) {
+          try await self.engine.handle(req, deadline: deadline)
+        }
+      }
+      resp = Response(ok: true, output: output)
     } catch let e as CLIError {
       var message = e.message
       if e.code == ExitCode.timeout, let target = req.target, let url = engine.location(of: target), !message.contains(url) {
@@ -241,7 +270,7 @@ final class SessionServer {
     DispatchQueue.main.asyncAfter(deadline: .now() + every) { [weak self] in
       MainActor.assumeIsolated {
         guard let self else { return }
-        if self.active == 0 && Date().timeIntervalSince(self.lastActivity) > self.idle {
+        if self.active == 0 && !self.engine.anyShown && Date().timeIntervalSince(self.lastActivity) > self.idle {
           Task { await self.shutdown("idle for \(Int(self.idle))s") }
         } else {
           self.scheduleIdleCheck()
@@ -293,22 +322,35 @@ private final class Call {
     return p.revents & Int16(POLLHUP) != 0
   }
 
+  private let writes = DispatchQueue(label: "webkit-cli.call")
+
+  /// Streams a note line to the waiting client (ignored once answered, or if the client left).
+  nonisolated func send(note: String) {
+    guard var line = try? JSONEncoder().encode(Note(note: note)) else { return }
+    line.append(0x0A)
+    let fd = fd
+    writes.async { try? writeAll(fd, line) }
+  }
+
   /// Sends `resp` (nil = just hang up) and closes the connection. Later answers are ignored.
   func answer(_ resp: Response?) {
     guard !answered else { return }
     answered = true
     let fd = fd
-    let out = resp.flatMap { try? JSONEncoder().encode($0) }
-    DispatchQueue.global().async {
+    var out = resp.flatMap { try? JSONEncoder().encode($0) }
+    out?.append(0x0A)
+    writes.async {
       if let out { try? writeAll(fd, out) }
       close(fd)
     }
   }
 }
 
-/// Resolves with the body's result, or throws a timeout error once `seconds` pass (the body keeps running).
+/// Resolves with the body's result, or throws a timeout once `deadline` expires (the body keeps running).
+/// The deadline pauses while a person works in a shown tab.
 @MainActor
-func withTimeout(_ seconds: Double, cmd: String, _ body: @escaping @MainActor () async throws -> String) async throws -> String {
+func withDeadline(_ deadline: Deadline, cmd: String, timeout: Double,
+                  _ body: @escaping @MainActor () async throws -> String) async throws -> String {
   try await withCheckedThrowingContinuation { (c: CheckedContinuation<String, Error>) in
     var done = false
     Task { @MainActor in
@@ -316,15 +358,21 @@ func withTimeout(_ seconds: Double, cmd: String, _ body: @escaping @MainActor ()
       do { result = .success(try await body()) } catch { result = .failure(error) }
       if !done { done = true; c.resume(with: result) }
     }
-    DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
-      MainActor.assumeIsolated {
-        if !done {
-          done = true
-          c.resume(throwing: CLIError("\(cmd) timed out after \(Int(seconds.rounded(.up)))s (raise with --timeout)", code: ExitCode.timeout))
-        }
+    @MainActor func check() {
+      guard !done else { return }
+      if deadline.expired {
+        done = true
+        c.resume(throwing: CLIError("\(cmd) timed out after \(Int(timeout.rounded(.up)))s (raise with --timeout)", code: ExitCode.timeout))
+        return
       }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { MainActor.assumeIsolated { check() } }
     }
+    check()
   }
+}
+
+struct Note: Codable {
+  var note: String
 }
 
 // MARK: sockets
@@ -383,18 +431,16 @@ private func writeAll(_ fd: Int32, _ data: Data) throws {
   }
 }
 
-private func readAll(_ fd: Int32) throws -> Data {
-  var out = Data()
+/// Next bytes from the socket, or nil at end of stream.
+private func readChunk(_ fd: Int32) throws -> Data? {
   var buf = [UInt8](repeating: 0, count: 65536)
-  while true {
-    let n = read(fd, &buf, buf.count)
-    if n == 0 { return out }
-    guard n > 0 else {
-      if errno == EAGAIN || errno == EWOULDBLOCK { throw CLIError("no answer from session process in time", code: ExitCode.timeout) }
-      throw CLIError("socket read failed: \(String(cString: strerror(errno)))")
-    }
-    out.append(buf, count: n)
+  let n = read(fd, &buf, buf.count)
+  if n == 0 { return nil }
+  guard n > 0 else {
+    if errno == EAGAIN || errno == EWOULDBLOCK { throw CLIError("no answer from session process in time", code: ExitCode.timeout) }
+    throw CLIError("socket read failed: \(String(cString: strerror(errno)))")
   }
+  return Data(buf[0..<n])
 }
 
 private func readLine(_ fd: Int32) throws -> Data {

@@ -2,7 +2,7 @@
 
 A tiny macOS CLI over the system WebKit (`WKWebView`) so agents can browse **logged in** with **no windows**.
 
-Sign in to a service once in a real window (usually "Sign in with Google/GitHub"). After that every command runs headless: navigate dashboards, click, read, create and copy API keys.
+Sign in to a service once in a real window (usually "Sign in with Google/GitHub"). After that every command runs headless: navigate dashboards, click, read, create and copy API keys. If a headless flow hits a step only a person can do (Google's "confirm it's you", 2FA, a captcha), you can opt in to have that same live tab pop up, let the person finish, and carry on headless.
 
 ## Why this works (the occlusion finding)
 
@@ -77,7 +77,7 @@ webkit-cli auth railway.com       # "Sign in with GitHub" completes in the same 
 webkit-cli auth vercel.com --account work   # a second, separate identity
 ```
 
-`auth` is the only command that opens a window. It's a normal window with a bar across the top that shows the instruction ("Sign in, then click Done."), the page's current URL, and a **Done** button. It also has a real Edit menu, so ⌘V pastes passwords. You type into the page yourself; webkit-cli never handles, stores or prints passwords. Click Done, close the window (⌘W), quit (⌘Q) or press Ctrl-C in the terminal: every one of these saves and exits. Popups from `window.open`, which some OAuth flows use, open as real windows here and as hidden ones in headless mode.
+`auth` opens a window, and so do `show`/`--escalate` below when you ask for them. Nothing else ever does. It's a normal window with a bar across the top that shows the instruction ("Sign in, then click Done."), the page's current URL, and a **Done** button. It also has a real Edit menu, so ⌘V pastes passwords. You type into the page yourself; webkit-cli never handles, stores or prints passwords. Click Done, close the window (⌘W), quit (⌘Q) or press Ctrl-C in the terminal: every one of these saves and exits. Popups from `window.open`, which some OAuth flows use, open as real windows here and as hidden ones in headless mode.
 
 ### Then run headless
 
@@ -107,6 +107,23 @@ webkit-cli eval $tab '
   await new Promise(r => setTimeout(r, 1000));
   return document.querySelector("[role=dialog]")?.innerText'
 ```
+
+### When a person is needed
+
+```sh
+webkit-cli show $tab --reason "Approve the 2FA prompt, then click Done"   # that live tab, on screen
+webkit-cli wait $tab --until-hidden --timeout 600                          # until they click Done
+webkit-cli text $tab                                                       # back headless, same page state
+
+webkit-cli click $tab 'text=Continue' --escalate          # pops up only if it lands on a challenge page
+webkit-cli wait  $tab --until-url dashboard --escalate --human-timeout 300
+```
+
+- `show` puts the tab's own window on screen, with the page state untouched. A bar shows the reason, the live URL and **Done**. Done, ⌘W and the close button all hide it again. None of them close the tab.
+- `--escalate` (on `click`, `wait`, `goto`) watches for challenge pages: Google `signin/challenge` and `speedbump`, GitHub 2FA, a visible reCAPTCHA/hCaptcha/Turnstile, and your own `--challenge-url <regex>`. The tab and any popup it opened are both checked. When one hits, it shows that tab, prints `webkit-cli: needs you: …` to stderr right away, waits until the page is past the challenge (or Done), hides it, and returns normally.
+- Time spent waiting for the person doesn't count toward `--timeout`. `--human-timeout` (default 600s) bounds it, then exit 3.
+- `show`, `hide`, `tabs` and `stop` skip the command queue, so they work while something is waiting on the person. The session never idles out while a tab is shown.
+- `ESCALATE=1 scripts/browser-use-apikey.sh` uses this for Google's "confirm it's you".
 
 ## Security
 

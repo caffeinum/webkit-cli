@@ -14,12 +14,42 @@ struct Request: Codable {
   var untilSelector: String?
   var wait: Double?          // nil = the command's default settle time
   var timeout: Double
+  var untilHidden: Bool?
+  var escalate: Bool?
+  var challengeURLs: [String]?
+  var humanTimeout: Double?
 }
+
+let defaultHumanTimeout: Double = 600
+
+/// A command's time budget. Paused while a human works in a shown tab: --timeout is machine time only.
+@MainActor
+final class Deadline {
+  private var at: Date
+  private var pausedAt: Date?
+
+  init(_ seconds: Double) { at = Date().addingTimeInterval(seconds) }
+
+  var expired: Bool { pausedAt == nil && Date() > at }
+  func pause() { if pausedAt == nil { pausedAt = Date() } }
+  func resume() {
+    guard let p = pausedAt else { return }
+    at = at.addingTimeInterval(Date().timeIntervalSince(p))
+    pausedAt = nil
+  }
+}
+
+/// Pages that need a person: sign-in challenges and visible captchas. Scripts add more with --challenge-url.
+let builtinChallengeURLs = [
+  #"^https://accounts\.google\.com/(v3/)?signin/(v2/)?challenge"#,
+  #"^https://accounts\.google\.com/.*/challenge/"#,
+  #"^https://accounts\.google\.com/speedbump"#,
+  #"^https://github\.com/sessions/(two-factor|verified-device)"#,
+]
 
 struct Response: Codable {
   var ok: Bool
   var output: String?
-  var notes: [String]?
   var error: String?
   var code: Int32?
 }
@@ -36,17 +66,29 @@ final class Engine {
   let keepsTabs: Bool
   private var tabs: [String: Browser] = [:]
   private var openers: [String: String] = [:]
-  /// Hints for the caller's stderr, collected during the current request.
-  private(set) var notes: [String] = []
+  /// Where the current request's notes go: straight to its caller's stderr, while it still waits.
+  @TaskLocal static var noteSink: (@Sendable (String) -> Void)?
+  /// Popups open from WebKit callbacks, outside any request; their note goes to the latest caller.
+  private var lastSink: (@Sendable (String) -> Void)?
+
+  private func note(_ s: String) {
+    if let sink = Engine.noteSink {
+      lastSink = sink
+      sink(s)
+    } else {
+      lastSink?(s)
+    }
+  }
+
+  var anyShown: Bool { tabs.values.contains { $0.isShown } }
 
   init(profile: Profile, keepsTabs: Bool) {
     self.profile = profile
     self.keepsTabs = keepsTabs
   }
 
-  func handle(_ r: Request) async throws -> String {
-    notes = []
-    let deadline = Date().addingTimeInterval(r.timeout)
+  func handle(_ r: Request, deadline: Deadline) async throws -> String {
+    if let sink = Engine.noteSink { lastSink = sink }
     switch r.cmd {
     case "open":
       let url = try requireURL(r.url)
@@ -65,6 +107,7 @@ final class Engine {
       let (id, tab) = try tab(r.target)
       try await tab.load(try requireURL(r.url))
       try await settle(r.wait ?? 3)
+      try await escalateIfChallenged(id, r, deadline: deadline)
       var info = try await pageInfo(tab)
       info["tab"] = id
       return try jsonString(info)
@@ -73,7 +116,7 @@ final class Engine {
       for id in tabs.keys.sorted() {
         let t = tabs[id]!
         var row: [String: Any] = ["tab": id, "url": t.web.url?.absoluteString ?? NSNull(), "title": t.web.title ?? NSNull(),
-                                  "loading": t.web.isLoading]
+                                  "loading": t.web.isLoading, "shown": t.isShown]
         if let opener = openers[id] { row["opener"] = opener }
         rows.append(row)
       }
@@ -90,7 +133,7 @@ final class Engine {
       return try await withTarget(r) { tab in
         if let json = try await tab.evalJSON(js) { return json }
         if !js.contains("return") {
-          notes.append("result was undefined — eval runs your code as an async function body, so use `return <value>`")
+          self.note("result was undefined — eval runs your code as an async function body, so use `return <value>`")
         }
         return "null"
       }
@@ -111,8 +154,9 @@ final class Engine {
       let hit = try await tab.callJS(clickJS, ["selector": selector])
       // the click is dispatched on the next tick; give a navigation it starts a moment to begin
       try await Task.sleep(nanoseconds: 500_000_000)
-      guard try await tab.waitUntilIdle(deadline: deadline) else { throw timeoutError(r) }
+      guard try await tab.waitUntilIdle(until: { deadline.expired }) else { throw timeoutError(r) }
       try await settle(r.wait ?? 1)
+      try await escalateIfChallenged(id, r, deadline: deadline)
       var info = try await pageInfo(tab)
       info["tab"] = id
       info["clicked"] = hit ?? NSNull()
@@ -125,11 +169,21 @@ final class Engine {
       return try jsonString(["tab": id, "typed": field ?? NSNull()] as [String: Any])
     case "wait":
       let (id, tab) = try tab(r.target)
-      try await waitFor(tab, r, deadline: deadline)
+      try await waitFor(id, tab, r, deadline: deadline)
       try await settle(r.wait ?? 0)
       var info = try await pageInfo(tab)
       info["tab"] = id
       return try jsonString(info)
+    case "show":
+      let (id, tab) = try tab(r.target)
+      let reason = r.text ?? "Finish this step, then click Done."
+      try tab.show(reason: reason)
+      note("needs you: \(reason) (tab \(id))")
+      return try jsonString(["tab": id, "shown": true] as [String: Any])
+    case "hide":
+      let (id, tab) = try tab(r.target)
+      tab.hide()
+      return try jsonString(["tab": id, "shown": false] as [String: Any])
     case "close":
       let (id, _) = try tab(r.target)
       closeTab(id)
@@ -165,7 +219,7 @@ final class Engine {
     tab.onPopup = { [weak self] popup in
       guard let self else { return }
       let popupID = self.register(popup, opener: id)
-      self.notes.append("tab \(id) opened popup \(popupID)")
+      self.note("tab \(id) opened popup \(popupID)")
     }
     tab.onPageClose = { [weak self] in self?.closeTab(id) }
     return id
@@ -199,13 +253,17 @@ final class Engine {
     return try await body(tab)
   }
 
-  private func waitFor(_ tab: Browser, _ r: Request, deadline: Date) async throws {
+  private func waitFor(_ id: String, _ tab: Browser, _ r: Request, deadline: Deadline) async throws {
     if let pattern = r.untilURL {
       do { _ = try NSRegularExpression(pattern: pattern) } catch {
         throw CLIError("--until-url is not a valid regex: \(pattern)", code: ExitCode.usage)
       }
     }
+    let hasConditions = r.untilURL != nil || r.untilSelector != nil
     while true {
+      // --until-hidden races the url/selector conditions: whichever holds first
+      if r.untilHidden == true && !tab.isShown { return }
+      try await escalateIfChallenged(id, r, deadline: deadline)
       let idle = !tab.web.isLoading
       let urlOK = try r.untilURL.map { pattern in
         let url = tab.web.url?.absoluteString ?? ""
@@ -220,10 +278,58 @@ final class Engine {
         }
         selectorOK = found as? Bool ?? false
       }
-      if idle && urlOK && selectorOK { return }
-      if Date() > deadline { throw timeoutError(r, url: tab.web.url?.absoluteString) }
+      if idle && urlOK && selectorOK && (hasConditions || r.untilHidden != true) { return }
+      if deadline.expired { throw timeoutError(r, url: tab.web.url?.absoluteString) }
       try await Task.sleep(nanoseconds: 200_000_000)
     }
+  }
+
+  // MARK: escalation to a human
+
+  /// With --escalate: if the tab (or a popup it opened) sits on a challenge page, show it and wait for
+  /// the person to get past it (or click Done), then hide it again. Human time doesn't count toward --timeout.
+  private func escalateIfChallenged(_ id: String, _ r: Request, deadline: Deadline) async throws {
+    guard r.escalate == true else { return }
+    let candidates = [id] + openers.filter { $0.value == id }.map(\.key).sorted()
+    var hit: (String, Browser)?
+    for cid in candidates {
+      if let t = tabs[cid], try await isChallenge(t, r) { hit = (cid, t); break }
+    }
+    guard let (cid, t) = hit else { return }
+    let reason = "this page needs a person (\(t.web.url?.host ?? "?")) — finish it in the window; it closes by itself, or click Done"
+    try t.show(reason: reason)
+    note("needs you: \(reason) (tab \(cid))")
+    deadline.pause()
+    defer { deadline.resume() }
+    let giveUp = Date().addingTimeInterval(r.humanTimeout ?? defaultHumanTimeout)
+    while true {
+      try await Task.sleep(nanoseconds: 300_000_000)
+      if t.isClosed || !t.isShown { break } // popup finished and closed itself, or Done
+      if !t.web.isLoading, try await !isChallenge(t, r) { break }
+      if Date() > giveUp {
+        t.hide()
+        throw CLIError("""
+          no one finished the human step within \(Int(r.humanTimeout ?? defaultHumanTimeout))s \
+          (tab \(cid) is at \(t.web.url?.absoluteString ?? "?")) — raise --human-timeout
+          """, code: ExitCode.timeout)
+      }
+    }
+    if !t.isClosed { t.hide() }
+    note("human step done (tab \(cid))")
+  }
+
+  private func isChallenge(_ tab: Browser, _ r: Request) async throws -> Bool {
+    let url = tab.web.url?.absoluteString ?? ""
+    for pattern in builtinChallengeURLs + (r.challengeURLs ?? []) {
+      let re = try NSRegularExpression(pattern: pattern)
+      if re.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil { return true }
+    }
+    let captcha = try? await tab.callJS("""
+      return [...document.querySelectorAll('iframe')].some(f =>
+        /recaptcha|hcaptcha|challenges\\.cloudflare\\.com/.test(f.src) && !/size=invisible/.test(f.src) &&
+        f.offsetWidth > 30 && f.offsetHeight > 30 && getComputedStyle(f).visibility !== 'hidden')
+      """)
+    return captcha as? Bool ?? false
   }
 
   private func timeoutError(_ r: Request, url: String? = nil) -> CLIError {

@@ -22,6 +22,14 @@ let helpText = """
     webkit-cli close <tab>
     webkit-cli stop                         end the profile's session now (saves cookies)
 
+  WHEN A PERSON IS NEEDED (the only other time a window appears — always opt-in)
+    webkit-cli show <tab> [--reason <text>] put that live tab on screen with a Done bar
+    webkit-cli hide <tab>                   back to headless (Done, ⌘W and the close button do this too)
+    webkit-cli wait <tab> --until-hidden    until the person clicks Done (or --until-url/-selector holds)
+    --escalate on click/wait/goto           if the tab (or its popup) lands on a challenge page — Google
+                                            "verify it's you", GitHub 2FA, a visible captcha — show it,
+                                            wait for the person to get past it, hide it, carry on
+
   ONE-SHOT (a URL instead of a tab: load it in a temporary tab, act, close)
     webkit-cli text <url>
     webkit-cli eval <url> '<js>'
@@ -52,6 +60,9 @@ let helpText = """
     --until-url <regex>     `wait` until the tab's URL matches
     --until-selector <css>  `wait` until an element matching <css> exists
     --idle <sec>            idle timeout for a session this command starts (default 900)
+    --challenge-url <regex> with --escalate: also treat matching URLs as challenges (repeatable)
+    --human-timeout <sec>   with --escalate: how long to wait for the person (default 600, exit 3
+                            after); time spent waiting for a person doesn't count toward --timeout
     --out <file>            write `eval`/`text` output to <file> (mode 0600) instead of stdout,
                             and print only {"written","bytes"} — for API keys and other secrets
     --raw                   `eval`: when the result is a string, output it without JSON quotes
@@ -101,6 +112,11 @@ struct Options {
   var untilSelector: String?
   var out: String?
   var raw = false
+  var reason: String?
+  var untilHidden = false
+  var escalate = false
+  var challengeURLs: [String] = []
+  var humanTimeout: Double?
 }
 
 func parseArguments(_ args: [String]) throws -> (Command, Options) {
@@ -121,10 +137,18 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
     let a = args[i]
     switch a {
     case "-h", "--help": return (.help, opts)
-    case "--raw":
-      opts.raw = true
+    case "--raw", "--until-hidden", "--escalate":
+      if a == "--raw" { opts.raw = true } else if a == "--until-hidden" { opts.untilHidden = true } else { opts.escalate = true }
       i += 1
       continue
+    case "--reason": opts.reason = try value(a)
+    case "--challenge-url":
+      let pattern = try value(a)
+      guard (try? NSRegularExpression(pattern: pattern)) != nil else {
+        throw CLIError("--challenge-url is not a valid regex: \(pattern)", code: ExitCode.usage)
+      }
+      opts.challengeURLs.append(pattern)
+    case "--human-timeout": opts.humanTimeout = try seconds(a)
     case "--wait": opts.wait = try seconds(a)
     case "--timeout": opts.timeout = try seconds(a)
     case "--idle": opts.idle = try seconds(a)
@@ -151,7 +175,9 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
                text: String? = nil, path: String? = nil) -> Command {
     .session(account: account, request: Request(
       cmd: cmd, target: target, url: url, js: js, selector: selector, text: text, path: path,
-      untilURL: opts.untilURL, untilSelector: opts.untilSelector, wait: opts.wait, timeout: opts.timeout))
+      untilURL: opts.untilURL, untilSelector: opts.untilSelector, wait: opts.wait, timeout: opts.timeout,
+      untilHidden: opts.untilHidden ? true : nil, escalate: opts.escalate ? true : nil,
+      challengeURLs: opts.challengeURLs.isEmpty ? nil : opts.challengeURLs, humanTimeout: opts.humanTimeout))
   }
   func tabOrURL(_ s: String) throws -> String { isTabID(s) ? s : try parseURL(s).absoluteString }
   func tabID(_ s: String) throws -> String {
@@ -159,9 +185,15 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
     return s
   }
 
-  let tabCommands: Set = ["open", "goto", "tabs", "click", "type", "wait", "close", "stop"]
+  let tabCommands: Set = ["open", "goto", "tabs", "click", "type", "wait", "close", "stop", "show", "hide"]
   if account == "-" && tabCommands.contains(verb) {
     throw CLIError("--account - is one-shot only (text/eval/shot <url>); \(verb) needs a saved profile's session", code: ExitCode.usage)
+  }
+  if opts.escalate || !opts.challengeURLs.isEmpty || opts.humanTimeout != nil {
+    guard ["click", "wait", "goto"].contains(verb) else {
+      throw CLIError("--escalate/--challenge-url/--human-timeout work with click, wait and goto on a tab", code: ExitCode.usage)
+    }
+    guard opts.escalate else { throw CLIError("--challenge-url/--human-timeout need --escalate", code: ExitCode.usage) }
   }
 
   switch verb {
@@ -214,6 +246,12 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
   case "wait":
     try need(1, "wait <tab> [--until-url <regex>] [--until-selector <css>]")
     return (session("wait", target: try tabID(rest[0])), opts)
+  case "show":
+    try need(1, "show <tab> [--reason <text>]")
+    return (session("show", target: try tabID(rest[0]), text: opts.reason), opts)
+  case "hide":
+    try need(1, "hide <tab>")
+    return (session("hide", target: try tabID(rest[0])), opts)
   case "close":
     try need(1, "close <tab>")
     return (session("close", target: try tabID(rest[0])), opts)

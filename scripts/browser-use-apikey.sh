@@ -6,6 +6,9 @@
 #   key-file defaults to ~/.config/webkit-cli/secrets/browser-use.key (written 0600, dir 0700).
 #   GOOGLE_EMAIL=you@x.com picks that account if Google shows an account chooser.
 #   WEBKIT_CLI=/path/to/webkit-cli overrides the binary.
+#   ESCALATE=1: if Google asks you to confirm it's you, that tab pops up in a window; do it, click Done,
+#     and the script carries on headless (HUMAN_TIMEOUT seconds, default 600). Off by default, so an
+#     unattended run fails fast instead.
 #
 # The key goes page → file (eval --out --raw) and is never printed, logged or screenshotted.
 # The script prints the file path and a short sha256 fingerprint only.
@@ -95,8 +98,15 @@ if url | grep -Eq "$SIGNED_OUT_RE"; then
     fi
     if url "$cur" 2>/dev/null | grep -Eq "$PROVIDER_URL_RE"; then
         page=$("$W" text "$cur")
-        if echo "$page" | grep -Eqi "verify it.s you|enter your password|passkey|2-step|use your phone"; then
-          fail "Google wants you to re-verify — run: webkit-cli auth google.com (sign in, click Done), then re-run this script"
+        if echo "$page" | grep -Eqi "verify it.s you|confirm it.s you|enter your password|passkey|2-step|use your phone"; then
+          if [ "${ESCALATE:-0}" = 1 ]; then
+            # the same live tab pops up; the person clears Google's check, clicks Done, we carry on headless
+            "$W" show "$cur" --reason "Google wants you to confirm it's you — do that, then click Done" >/dev/null
+            "$W" wait "$cur" --until-hidden --timeout "${HUMAN_TIMEOUT:-600}" >/dev/null 2>&1 || true
+            "$W" hide "$cur" >/dev/null 2>&1 || true
+            continue
+          fi
+          fail "Google wants you to re-verify — re-run with ESCALATE=1 to do it in a window, or run: webkit-cli auth google.com"
         fi
         # rehearsal hook: a fake provider that asks for a username (never used for Google)
         if [ -n "${PROVIDER_TYPE_SELECTOR:-}" ]; then

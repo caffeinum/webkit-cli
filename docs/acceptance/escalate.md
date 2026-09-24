@@ -48,6 +48,20 @@ Escalation can only be proven when Google actually challenges, and we can't trig
 
 Pass = 2 done, and 1 done once whenever a challenge happens (recorded here with the date).
 
+## dev decisions (webkit-cli)
+
+- **Same window, moved on-screen, no reparenting.** Each headless tab already owns its own borderless off-screen window. `show` restyles that same NSWindow (titled/closable/resizable), adds the bar as a titlebar accessory (reason · live URL · **Done**), centers it, and activates the app. The WKWebView never leaves its window, so its process, JS state and layer tree are untouched (E1). `hide` reverses it: borderless, back to (-20000,-20000), ordered front. Occlusion detection stays off on the view, so it keeps rendering. Checked by dev: `window.__m` survives show/hide, and `visibilityState` "visible" + rAF 62/s after hide.
+- **Activation policy stays `.accessory`.** An accessory app can still own the key window and activate, so there's no Dock icon. The first `show` installs a main menu (Edit for ⌘V, Close = ⌘W) so paste works.
+- **Done / ⌘W / close button** all go through `windowShouldClose`, which hides and never closes the tab.
+- **E8: control commands skip the queue.** `show`, `hide`, `tabs` and `stop` run immediately, even while a `wait --until-hidden` or an `--escalate` is blocking the queue. Everything else stays serialized. The idle timer never fires while any tab is shown.
+- **Notes stream live.** The session sends `{"note": …}` lines over the socket before the final answer, so `webkit-cli: needs you: <reason> (tab <id>)` reaches stderr the moment the window opens, not when the command ends.
+- **--timeout is machine time.** The command's deadline pauses while a person works, and `--human-timeout` (default 600) bounds that part. The client's socket read timeout covers both.
+- **Challenge detection:** built-in URL patterns (Google `signin/challenge`, `/challenge/`, `speedbump`; GitHub `sessions/two-factor|verified-device`) + `--challenge-url` + a visible reCAPTCHA/hCaptcha/Turnstile iframe (invisible reCAPTCHA v3 is ignored). It checks the tab and any popups it opened, and shows the one that's challenged (E7).
+- **Escalation ends** when the challenged tab is no longer on a challenge page (and idle), when Done is clicked, or when the popup closes itself. Then the tab is hidden and the command carries on (for `wait`, its `--until-*` conditions still apply).
+- **Surface kept as proposed**, plus `--reason` on `show`. `--escalate`/`--challenge-url`/`--human-timeout` are accepted only on `click`/`wait`/`goto` with a tab. Anything else → exit 2 (covers E11's one-shot case). The throwaway `-` rejects `show`/`hide` with exit 2.
+- **No GUI session** → `show`/escalation exit 1 "can't show a window: no GUI session" (checked via CGSessionCopyCurrentDictionary / kCGSessionOnConsoleKey).
+- **browser-use script:** `ESCALATE=1` turns Google's "confirm it's you" page into show → `wait --until-hidden` → hide → carry on. It's script-driven (text match), so it doesn't depend on the built-in URL patterns.
+
 ## open questions for dev
 
 - does reparenting a `WKWebView` between the off-screen window and the visible one keep its process, layer tree and occlusion state? If not, what's the fallback (move the window itself on-screen, i.e. same NSWindow at a visible frame + restyle)? Moving one window is probably simpler.

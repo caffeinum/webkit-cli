@@ -43,7 +43,6 @@ func runWithoutApp(_ command: Command) throws -> Bool {
     if account != defaultAccount { _ = try Accounts.load().id(of: account) }
     let resp = try SessionClient.send(request, account: account, idle: options.idle)
     guard resp.ok else { throw CLIError(resp.error ?? "session command failed", code: resp.code ?? ExitCode.failure) }
-    resp.notes?.forEach { printErr("webkit-cli: note: \($0)") }
     try emit(resp.output ?? "", options)
   default:
     return false
@@ -78,8 +77,9 @@ func run(_ command: Command, _ opts: Options) async throws {
       throw CLIError("the throwaway profile `-` has no session, so no tabs — pass a URL, or use a saved profile", code: ExitCode.usage)
     }
     let engine = Engine(profile: try await Profile.open("-"), keepsTabs: false)
-    let output = try await engine.handle(request)
-    engine.notes.forEach { printErr("webkit-cli: note: \($0)") }
+    let output = try await Engine.$noteSink.withValue({ printErr("webkit-cli: \($0)") }) {
+      try await engine.handle(request, deadline: Deadline(request.timeout))
+    }
     try emit(output, opts)
   case .serve(let account, let idle):
     guard try SessionServer.claim(account) else {
@@ -199,7 +199,8 @@ func jsonString(_ value: Any) throws -> String {
 }
 
 @MainActor
-private func installMenu() {
+func installMenu() {
+  guard NSApp.mainMenu?.items.isEmpty ?? true else { return }
   let main = NSMenu()
   func submenu(_ title: String, _ items: [NSMenuItem]) {
     let holder = NSMenuItem(title: title, action: nil, keyEquivalent: "")

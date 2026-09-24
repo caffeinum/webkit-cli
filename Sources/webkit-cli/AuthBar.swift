@@ -1,17 +1,20 @@
 import AppKit
 import WebKit
 
-/// The auth window's content: a bar with the instruction, the current URL and a Done button, above the page.
+/// The strip shown over a page a person has to act on: what to do, where the page is, and Done.
 @MainActor
-final class AuthContainer: NSView {
+final class AuthBar: NSView {
   private let urlLabel = NSTextField(labelWithString: "")
+  private let instructionLabel: NSTextField
   private var urlObservation: NSKeyValueObservation?
 
-  init(web: WKWebView, onDone: @escaping () -> Void) {
-    super.init(frame: NSRect(origin: .zero, size: NSSize(width: viewport.width, height: viewport.height + 44)))
+  init(web: WKWebView, instruction: String, onDone: @escaping () -> Void) {
+    instructionLabel = NSTextField(labelWithString: instruction)
+    super.init(frame: NSRect(x: 0, y: 0, width: viewport.width, height: 44))
 
-    let instruction = NSTextField(labelWithString: "Sign in, then click Done.")
-    instruction.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+    instructionLabel.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+    instructionLabel.lineBreakMode = .byTruncatingTail
+    instructionLabel.setContentCompressionResistancePriority(.defaultLow + 1, for: .horizontal)
 
     urlLabel.textColor = .secondaryLabelColor
     urlLabel.lineBreakMode = .byTruncatingMiddle
@@ -27,15 +30,41 @@ final class AuthContainer: NSView {
     let spacer = NSView()
     spacer.setContentHuggingPriority(.init(1), for: .horizontal)
 
-    let bar = NSStackView(views: [instruction, urlLabel, spacer, done])
-    bar.orientation = .horizontal
-    bar.spacing = 12
-    bar.edgeInsets = NSEdgeInsets(top: 8, left: 14, bottom: 8, right: 14)
-    bar.setHuggingPriority(.defaultHigh, for: .vertical)
+    let stack = NSStackView(views: [instructionLabel, urlLabel, spacer, done])
+    stack.orientation = .horizontal
+    stack.spacing = 12
+    stack.edgeInsets = NSEdgeInsets(top: 8, left: 14, bottom: 8, right: 14)
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(stack)
+    NSLayoutConstraint.activate([
+      stack.topAnchor.constraint(equalTo: topAnchor),
+      stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+      stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+      stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+      heightAnchor.constraint(equalToConstant: 44),
+    ])
 
+    urlObservation = web.observe(\.url, options: [.initial, .new]) { [weak self] web, _ in
+      MainActor.assumeIsolated { self?.urlLabel.stringValue = web.url?.absoluteString ?? "" }
+    }
+  }
+
+  var instruction: String {
+    get { instructionLabel.stringValue }
+    set { instructionLabel.stringValue = newValue }
+  }
+
+  required init?(coder: NSCoder) { fatalError("not used") }
+}
+
+/// The auth window's content: the bar above the page.
+@MainActor
+final class AuthContainer: NSView {
+  init(web: WKWebView, onDone: @escaping () -> Void) {
+    super.init(frame: NSRect(origin: .zero, size: NSSize(width: viewport.width, height: viewport.height + 44)))
+    let bar = AuthBar(web: web, instruction: "Sign in, then click Done.", onDone: onDone)
     let separator = NSBox()
     separator.boxType = .separator
-
     for v in [bar, separator, web] as [NSView] {
       v.translatesAutoresizingMaskIntoConstraints = false
       addSubview(v)
@@ -52,10 +81,6 @@ final class AuthContainer: NSView {
       web.trailingAnchor.constraint(equalTo: trailingAnchor),
       web.bottomAnchor.constraint(equalTo: bottomAnchor),
     ])
-
-    urlObservation = web.observe(\.url, options: [.initial, .new]) { [weak self] web, _ in
-      MainActor.assumeIsolated { self?.urlLabel.stringValue = web.url?.absoluteString ?? "" }
-    }
   }
 
   required init?(coder: NSCoder) { fatalError("not used") }

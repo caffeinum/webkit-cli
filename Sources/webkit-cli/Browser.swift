@@ -27,6 +27,12 @@ func disableOcclusionDetection(_ web: WKWebView) throws {
   unsafeBitCast(imp, to: SetBool.self)(web, sel, false)
 }
 
+/// Whether this process can put a window in front of a person (false over ssh / at the login window).
+func hasGUISession() -> Bool {
+  guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+  return session[kCGSessionOnConsoleKey as String] as? Bool ?? false
+}
+
 /// One web view in its own window — a tab. Headless tabs live off-screen; `auth` uses a visible one.
 @MainActor
 final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDelegate {
@@ -86,16 +92,76 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     let w = NSWindow(contentRect: NSRect(origin: NSPoint(x: -20000, y: -20000), size: viewport),
                      styleMask: [.borderless], backing: .buffered, defer: false)
     w.isReleasedWhenClosed = false
+    makeHeadless(w)
+    return w
+  }
+
+  private static func makeHeadless(_ w: NSWindow) {
     w.isExcludedFromWindowsMenu = true
     w.collectionBehavior = [.transient, .ignoresCycle, .stationary]
     w.hasShadow = false
-    return w
   }
 
   private(set) var isClosed = false
 
+  // MARK: showing a headless tab to a person
+
+  /// True while this headless tab is on screen for a person (show/--escalate).
+  private(set) var isShown = false
+  private var shownBar: (NSTitlebarAccessoryViewController, AuthBar)?
+
+  /// Brings this tab's own window on screen — the same window and web view, so the page keeps its state,
+  /// process and JS — with a bar saying what to do and a Done button. Done, ⌘W and the close button hide it.
+  func show(reason: String) throws {
+    guard !visible else { return }
+    guard hasGUISession() else {
+      throw CLIError("can't show a window: no GUI session (logged in over ssh, or at the login window?)")
+    }
+    installMenu()
+    if let (_, bar) = shownBar {
+      bar.instruction = reason
+    } else {
+      window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
+      window.title = "webkit-cli — needs you"
+      window.collectionBehavior = [.moveToActiveSpace]
+      window.hasShadow = true
+      let bar = AuthBar(web: web, instruction: reason) { [weak self] in self?.hide() }
+      let accessory = NSTitlebarAccessoryViewController()
+      accessory.view = bar
+      accessory.layoutAttribute = .bottom
+      window.addTitlebarAccessoryViewController(accessory)
+      shownBar = (accessory, bar)
+      window.setContentSize(viewport)
+      window.center()
+    }
+    isShown = true
+    NSApp.activate(ignoringOtherApps: true)
+    window.makeKeyAndOrderFront(nil)
+  }
+
+  /// Puts a shown tab back off screen, headless and still rendering. The tab stays open.
+  func hide() {
+    guard isShown else { return }
+    isShown = false
+    if let (accessory, _) = shownBar, let i = window.titlebarAccessoryViewControllers.firstIndex(of: accessory) {
+      window.removeTitlebarAccessoryViewController(at: i)
+    }
+    shownBar = nil
+    window.styleMask = [.borderless]
+    Browser.makeHeadless(window)
+    window.setFrame(NSRect(origin: NSPoint(x: -20000, y: -20000), size: viewport), display: false)
+    window.orderFrontRegardless()
+  }
+
+  func windowShouldClose(_ sender: NSWindow) -> Bool {
+    guard isShown else { return true }
+    hide() // the close button / ⌘W on a shown tab means "done", never "close the tab"
+    return false
+  }
+
   func close() {
     isClosed = true
+    isShown = false
     failRunningJS(CLIError("tab was closed while the script ran"))
     ownedPopups.forEach { $0.close() }
     ownedPopups = []
@@ -124,10 +190,10 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     }
   }
 
-  /// Waits until no navigation is in flight, polling; returns false if `deadline` passes first.
-  func waitUntilIdle(deadline: Date) async throws -> Bool {
+  /// Waits until no navigation is in flight, polling; returns false if `expired()` turns true first.
+  func waitUntilIdle(until expired: () -> Bool) async throws -> Bool {
     while web.isLoading {
-      if Date() > deadline { return false }
+      if expired() { return false }
       try await Task.sleep(nanoseconds: 100_000_000)
     }
     return true
