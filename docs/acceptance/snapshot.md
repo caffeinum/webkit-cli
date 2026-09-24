@@ -83,5 +83,6 @@ Fixture page `/snapshot` on the local server, containing: nav + headings, a hidd
 
 - [x] S1–S12 green (QA, cc6e763)
 - [x] README: snapshot, the ref rules, `--redact`, the JSON schema, and a Security note that snapshot prints secrets as they are; `text` removed everywhere (cc6e763)
-- [ ] B1 + B2 by personal
+- [x] B1 + B2 up to the confirm step, then Cancel, by personal. PASS 2026-09-24 on main 43d63e0: browser-use dialog refs → type → Cancel; railway GitHub login via refs, type made the React "Create" enabled. 0 eval, 0 windows, all rc 0. Note: browser-use's header "Copy a new API key" issues a key on click, so agents should read labels carefully (README hint).
+- [ ] the confirm step → key in the snapshot → 0600 file → API 200, on at least one of browser-use/railway, by aleks
 - [ ] webkit-pm signs off
