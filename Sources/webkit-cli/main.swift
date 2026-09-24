@@ -8,9 +8,10 @@ do {
 }
 
 let (command, options) = parsed
-if case .help = command {
-  print(helpText)
-  exit(0)
+do {
+  if try runWithoutApp(command) { exit(0) }
+} catch {
+  die(error)
 }
 
 MainActor.assumeIsolated {

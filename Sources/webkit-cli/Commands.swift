@@ -24,8 +24,8 @@ struct Profile {
   }
 }
 
-@MainActor
-func run(_ command: Command, _ opts: Options) async throws {
+/// Commands that need no WebKit run synchronously before the app starts; returns false for the rest.
+func runWithoutApp(_ command: Command) throws -> Bool {
   switch command {
   case .help:
     print(helpText)
@@ -33,44 +33,51 @@ func run(_ command: Command, _ opts: Options) async throws {
     let accounts = try Accounts.load()
     let rows = accounts.byName.keys.sorted().map { ["name": $0, "id": accounts.byName[$0]!.uuidString] }
     print(try jsonString(rows))
+  case .stop(let account):
+    try Accounts.validate(account)
+    let stopped = try SessionClient.stopIfRunning(account: account)
+    print(try jsonString(["account": account, "stopped": stopped] as [String: Any]))
+  case .session(let account, let request) where account != "-":
+    try Accounts.requirePinnedExecutableName()
+    try Accounts.validate(account)
+    if account != defaultAccount { _ = try Accounts.load().id(of: account) }
+    let resp = try SessionClient.send(request, account: account, idle: options.idle)
+    guard resp.ok else { throw CLIError(resp.error ?? "session command failed", code: resp.code ?? ExitCode.failure) }
+    print(resp.output ?? "")
+  default:
+    return false
+  }
+  return true
+}
+
+@MainActor
+func run(_ command: Command, _ opts: Options) async throws {
+  switch command {
+  case .help, .accounts, .stop:
+    preconditionFailure("handled by runWithoutApp")
+  case .session(_, let request):
+    // throwaway profile: no session process, tabs die with this command
+    startWatchdog(opts.timeout)
+    if let target = request.target, isTabID(target) {
+      throw CLIError("the throwaway profile `-` has no session, so no tabs — pass a URL, or use a saved profile", code: ExitCode.usage)
+    }
+    let engine = Engine(profile: try await Profile.open("-"), keepsTabs: false)
+    print(try await engine.handle(request))
+  case .serve(let account, let idle):
+    guard try SessionServer.claim(account) else {
+      printErr("webkit-cli: a session for '\(account)' is already running")
+      exit(0)
+    }
+    let server = SessionServer(account: account, profile: try await Profile.open(account), idle: idle)
+    try server.start()
+    await withUnsafeContinuation { (_: UnsafeContinuation<Void, Never>) in } // never resumed: the server exits the process on idle/stop
   case .auth(let account, let url):
     try await auth(account, url)
-  case .open(let account, let url):
-    try await headless(account, url, opts) { b in
-      print(try jsonString(try await pageInfo(b)))
-    }
-  case .text(let account, let url):
-    try await headless(account, url, opts) { b in
-      guard let text = try await b.callJS("return document.body ? document.body.innerText : null") as? String else {
-        throw CLIError("page has no <body>")
-      }
-      print(text)
-    }
-  case .eval(let account, let url, let js):
-    try await headless(account, url, opts) { b in
-      if let json = try await b.evalJSON(js) {
-        print(json)
-      } else {
-        print("null")
-        if !js.contains("return") {
-          printErr("webkit-cli: note: result was undefined — eval runs your code as an async function body, so use `return <value>`")
-        }
-      }
-    }
-  case .shot(let account, let url, let out):
-    try await headless(account, url, opts) { b in
-      let shot = try await b.snapshotPNG()
-      try writePNG(shot.data, to: out)
-      var info = try await pageInfo(b)
-      info["path"] = out.path
-      info["width"] = shot.width
-      info["height"] = shot.height
-      print(try jsonString(info))
-    }
   case .forget(let account):
     try Accounts.requirePinnedExecutableName()
     var accounts = try Accounts.load()
     let id = try accounts.id(of: account)
+    _ = try SessionClient.stopIfRunning(account: account)
     try await removeDataStore(id)
     try? FileManager.default.removeItem(at: Accounts.sessionFile(for: id))
     try accounts.remove(account)
@@ -81,22 +88,14 @@ func run(_ command: Command, _ opts: Options) async throws {
 }
 
 @MainActor
-private func headless(_ account: String, _ url: URL, _ opts: Options, _ body: (Browser) async throws -> Void) async throws {
-  startWatchdog(opts.timeout)
-  let profile = try await Profile.open(account)
-  let browser = try Browser(store: profile.store, visible: false)
-  try await browser.load(url)
-  try await Task.sleep(nanoseconds: UInt64(opts.wait * 1e9))
-  try await body(browser)
-  try await profile.close()
-}
-
-@MainActor
 private func auth(_ account: String, _ url: URL) async throws {
+  // a running session holds the profile's session cookies in memory and would overwrite what we save
+  if try SessionClient.stopIfRunning(account: account) {
+    printErr("webkit-cli: stopped the running session for '\(account)' so the sign-in is saved cleanly")
+  }
   installMenu()
   let profile = try await Profile.open(account, create: true)
-  let browser = try Browser(store: profile.store, visible: true,
-                            title: "webkit-cli · \(account)")
+  let browser = try Browser(store: profile.store, visible: true, title: "webkit-cli · \(account)")
   browser.web.load(URLRequest(url: url))
   printErr("webkit-cli: signing in as '\(account)' — click Done in the window when you're finished (or close it / Ctrl-C here).")
   let signals = closeOnSignals(browser.window)
@@ -117,16 +116,6 @@ private func closeOnSignals(_ window: NSWindow) -> [DispatchSourceSignal] {
     src.resume()
     return src
   }
-}
-
-@MainActor
-private func pageInfo(_ b: Browser) async throws -> [String: Any] {
-  var info: [String: Any] = [
-    "url": b.web.url?.absoluteString ?? NSNull(),
-    "title": try await b.callJS("return document.title") ?? NSNull(),
-  ]
-  info["status"] = b.lastStatus ?? NSNull()
-  return info
 }
 
 private let doctorProbe = """
@@ -180,14 +169,6 @@ private func removeDataStore(_ id: UUID) async throws {
 private func startWatchdog(_ seconds: Double) {
   DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
     die(CLIError("timed out after \(Int(seconds))s (raise with --timeout)", code: ExitCode.timeout))
-  }
-}
-
-private func writePNG(_ data: Data, to url: URL) throws {
-  let dir = url.deletingLastPathComponent()
-  guard FileManager.default.fileExists(atPath: dir.path) else { throw CLIError("directory does not exist: \(dir.path)") }
-  guard FileManager.default.createFile(atPath: url.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
-    throw CLIError("could not write \(url.path)")
   }
 }
 

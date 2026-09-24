@@ -27,34 +27,51 @@ func disableOcclusionDetection(_ web: WKWebView) throws {
   unsafeBitCast(imp, to: SetBool.self)(web, sel, false)
 }
 
+/// One web view in its own window — a tab. Headless tabs live off-screen; `auth` uses a visible one.
 @MainActor
 final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDelegate {
   let web: WKWebView
   let window: NSWindow
   let visible: Bool
   private(set) var lastStatus: Int?
+  /// The most recent main-frame load error, even one nobody was awaiting (e.g. after a click).
+  private(set) var lastFailure: String?
   private var requestedURL: String?
-  private var popups: [NSWindow] = []
   private var pendingLoad: CheckedContinuation<Void, Error>?
   private var closed: CheckedContinuation<Void, Never>?
-  private let userAgent: String
 
-  init(store: WKWebsiteDataStore, visible: Bool, title: String = "webkit-cli") throws {
-    userAgent = try safariUserAgent()
-    self.visible = visible
+  /// Called with each window.open popup. Without a handler the popup is kept alive by this tab.
+  var onPopup: ((Browser) -> Void)?
+  /// Called when the page closes itself (window.close()).
+  var onPageClose: (() -> Void)?
+  private var ownedPopups: [Browser] = []
+
+  convenience init(store: WKWebsiteDataStore, visible: Bool, title: String = "webkit-cli") throws {
     let cfg = WKWebViewConfiguration()
     cfg.websiteDataStore = store
-    web = WKWebView(frame: NSRect(origin: .zero, size: viewport), configuration: cfg)
-    window = Browser.makeWindow(visible: visible, title: title)
-    super.init()
-    try attach(web, to: window)
-    window.delegate = self
+    try self.init(configuration: cfg, visible: visible, title: title)
     if visible {
       let w = window
       window.contentView = AuthContainer(web: web) { w.performClose(nil) }
       window.center()
       window.makeKeyAndOrderFront(nil)
       NSApp.activate(ignoringOtherApps: true)
+    }
+  }
+
+  private init(configuration: WKWebViewConfiguration, visible: Bool, title: String) throws {
+    self.visible = visible
+    web = WKWebView(frame: NSRect(origin: .zero, size: viewport), configuration: configuration)
+    web.customUserAgent = try safariUserAgent()
+    window = Browser.makeWindow(visible: visible, title: title)
+    super.init()
+    web.navigationDelegate = self
+    web.uiDelegate = self
+    window.contentView = web
+    window.delegate = self
+    if !visible {
+      window.orderFrontRegardless()
+      try disableOcclusionDetection(web)
     }
   }
 
@@ -69,26 +86,28 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     let w = NSWindow(contentRect: NSRect(origin: NSPoint(x: -20000, y: -20000), size: viewport),
                      styleMask: [.borderless], backing: .buffered, defer: false)
     w.isReleasedWhenClosed = false
+    w.isExcludedFromWindowsMenu = true
+    w.collectionBehavior = [.transient, .ignoresCycle, .stationary]
+    w.hasShadow = false
     return w
   }
 
-  private func attach(_ view: WKWebView, to win: NSWindow) throws {
-    view.customUserAgent = userAgent
-    view.navigationDelegate = self
-    view.uiDelegate = self
-    win.contentView = view
-    if !visible {
-      win.orderFrontRegardless()
-      try disableOcclusionDetection(view)
-    }
+  func close() {
+    ownedPopups.forEach { $0.close() }
+    ownedPopups = []
+    finishLoad(.failure(CLIError("tab was closed")))
+    web.stopLoading()
+    window.close()
   }
 
   // MARK: loading
 
   func load(_ url: URL) async throws {
     lastStatus = nil
+    lastFailure = nil
     requestedURL = url.absoluteString
     try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+      finishLoad(.failure(CLIError("load of \(requestedURL ?? "?") was superseded by another load")))
       pendingLoad = c
       web.load(URLRequest(url: url))
     }
@@ -101,24 +120,34 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     }
   }
 
+  /// Waits until no navigation is in flight, polling; returns false if `deadline` passes first.
+  func waitUntilIdle(deadline: Date) async throws -> Bool {
+    while web.isLoading {
+      if Date() > deadline { return false }
+      try await Task.sleep(nanoseconds: 100_000_000)
+    }
+    return true
+  }
+
   private func finishLoad(_ result: Result<Void, Error>) {
     guard let c = pendingLoad else { return }
     pendingLoad = nil
     c.resume(with: result)
   }
 
+  func webView(_ w: WKWebView, didStartProvisionalNavigation _: WKNavigation!) {
+    lastFailure = nil
+  }
+
   func webView(_ w: WKWebView, didFinish _: WKNavigation!) {
-    guard w === web else { return }
     finishLoad(.success(()))
   }
 
   func webView(_ w: WKWebView, didFail _: WKNavigation!, withError error: Error) {
-    guard w === web else { return }
     navigationFailed(error)
   }
 
   func webView(_ w: WKWebView, didFailProvisionalNavigation _: WKNavigation!, withError error: Error) {
-    guard w === web else { return }
     navigationFailed(error)
   }
 
@@ -128,18 +157,19 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled { return }
     let failing = (ns.userInfo[NSURLErrorFailingURLErrorKey] as? URL)?.absoluteString
     let url = failing ?? requestedURL ?? "the page"
+    lastFailure = "\(url): \(ns.localizedDescription) (\(ns.domain) \(ns.code))"
     finishLoad(.failure(CLIError("load failed for \(url): \(ns.localizedDescription) (\(ns.domain) \(ns.code))")))
   }
 
   func webView(_ w: WKWebView, decidePolicyFor response: WKNavigationResponse) async -> WKNavigationResponsePolicy {
-    if w === web, response.isForMainFrame, let http = response.response as? HTTPURLResponse {
+    if response.isForMainFrame, let http = response.response as? HTTPURLResponse {
       lastStatus = http.statusCode
     }
     return .allow
   }
 
   func webViewWebContentProcessDidTerminate(_ w: WKWebView) {
-    guard w === web else { return }
+    lastFailure = "web content process crashed"
     finishLoad(.failure(CLIError("the page's web content process crashed")))
   }
 
@@ -147,26 +177,31 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
 
   func webView(_ w: WKWebView, createWebViewWith cfg: WKWebViewConfiguration, for _: WKNavigationAction,
                windowFeatures _: WKWindowFeatures) -> WKWebView? {
-    let popup = WKWebView(frame: NSRect(origin: .zero, size: viewport), configuration: cfg)
-    let win = Browser.makeWindow(visible: visible, title: "webkit-cli popup")
+    let popup: Browser
     do {
-      try attach(popup, to: win)
+      popup = try Browser(configuration: cfg, visible: visible, title: "webkit-cli popup")
     } catch {
       printErr("webkit-cli: refusing popup: \((error as? CLIError)?.message ?? "\(error)")")
       return nil
     }
     if visible {
-      win.center()
-      win.makeKeyAndOrderFront(nil)
+      popup.window.center()
+      popup.window.makeKeyAndOrderFront(nil)
     }
-    popups.append(win)
-    return popup
+    if let onPopup {
+      onPopup(popup)
+    } else {
+      popup.onPageClose = { [weak self, weak popup] in
+        popup?.close()
+        self?.ownedPopups.removeAll { $0 === popup }
+      }
+      ownedPopups.append(popup)
+    }
+    return popup.web
   }
 
   func webViewDidClose(_ w: WKWebView) {
-    guard let win = popups.first(where: { $0.contentView === w }) else { return }
-    popups.removeAll { $0 === win }
-    win.close()
+    onPageClose?()
   }
 
   // MARK: scripting
@@ -183,12 +218,18 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     return try await callJS(wrapped) as? String
   }
 
-  func callJS(_ body: String) async throws -> Any? {
+  func callJS(_ body: String, _ args: [String: Any] = [:]) async throws -> Any? {
     do {
-      return try await web.callAsyncJavaScript(body, arguments: [:], in: nil, contentWorld: .page)
+      return try await web.callAsyncJavaScript(body, arguments: args, in: nil, contentWorld: .page)
     } catch let error as NSError {
       if let msg = error.userInfo["WKJavaScriptExceptionMessage"] as? String {
         throw CLIError("javascript error: \(msg)")
+      }
+      if error.localizedDescription.contains("no longer reachable") {
+        throw CLIError("""
+          the page navigated away before the script finished. Split steps that change page: \
+          `click <tab> …` then `wait <tab> --until-url …`
+          """)
       }
       throw CLIError("javascript failed: \(error.localizedDescription)")
     }
@@ -212,8 +253,8 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
   }
 
   func windowWillClose(_ note: Notification) {
-    guard (note.object as? NSWindow) === window else { return }
-    popups.forEach { $0.close() }
+    guard visible else { return }
+    ownedPopups.forEach { $0.window.close() }
     closed?.resume()
     closed = nil
   }
