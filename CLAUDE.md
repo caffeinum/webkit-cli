@@ -10,3 +10,5 @@ swift package, one executable target. `swift build -c release`, then `./scripts/
 - never test against aleks's real accounts or ~/Library/WebKit/com.officecommun.search.
 - default profile is `main` (v1 accounts compat); named profiles only created by `auth --account`.
 - aleks may be running `.build/release/webkit-cli auth` — don't rebuild into .build while one runs (`pgrep -fl webkit-cli`); build with `--scratch-path` elsewhere and `BIN=... ./scripts/check.sh`.
+- session mode: one `serve` process per profile (Daemon.swift), unix socket in ~/.config/webkit-cli/run; requests serialized; SIGPIPE ignored (clients Ctrl-C). client must NOT shutdown(SHUT_WR) — server detects hung-up queued clients via POLLHUP.
+- acceptance scenarios: docs/acceptance/session-mode.md; fake oauth fixture scripts/fixtures/oauth_server.py (app :8765, idp :8766); rehearsal scripts/rehearse-browser-use.sh.

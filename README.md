@@ -129,16 +129,27 @@ webkit-cli eval $tab '
 
 ## What's verified
 
-On macOS 27.0 with `scripts/check.sh`: `doctor` (visible, rAF > 0), `open`, `text`, `eval` (including `await` and JS errors → exit 1), `shot` (valid PNG), and `--timeout` → exit 3, all against example.com. Also checked by hand:
-- persistent cookies and localStorage survive across processes in a profile
-- session-only cookies come back only because of the side-car file (with the file moved away they're gone)
-- three concurrent `eval`s on one profile all persist their cookies
-- `forget` deletes both the WebKit store and the side-car
-- a renamed binary refuses to run
-- an unknown `--account` fails
-- the `auth` window opens with the top bar (instruction, live URL, Done). Ctrl-C/SIGTERM saves and exits 0.
+On macOS 27.0. `scripts/check.sh` runs `doctor` (visible, rAF > 0) and the one-shot `text`/`eval`/`shot` against example.com, plus JS errors → exit 1, `--timeout` → exit 3, and `open` with `-` → exit 2.
 
-**auth, end to end:** a Google sign-in was done by hand with v1 (`auth main google`). Afterwards the headless default profile loads `myaccount.google.com` signed in, while a throwaway profile gets redirected to the signed-out `google.com/account/about` page. Not tested: GitHub sign-in, and clicking the Done button by hand. It runs the same close path as ⌘W and Ctrl-C.
+**Session mode** was built by a dev/pm/qa team on the mesh. An independent QA agent ran all 14 scenarios in [docs/acceptance/session-mode.md](docs/acceptance/session-mode.md) against the built binary, using throwaway profiles. Everything is green on the final build.
+
+- sign-in through a local fake OAuth redirect chain, and through a popup (the popup becomes a tab and closes itself)
+- a session-only login cookie survives `stop`, `kill -9` and idle expiry
+- `eval` that navigates fails at once, and the tab survives
+- queued commands run in order and honour `--timeout`
+- Ctrl-C'd or killed clients don't take the session down
+- concurrent cold starts give exactly one session
+- the idle exit fires between idle and idle+10%
+- the socket is 0600 and the run dir 0700
+- `text=` selectors, React-controlled inputs, and a public multi-page flow on github.com
+- zero on-screen windows throughout
+- the session log never contains cookies, keys or page text
+
+QA fixed 10 bugs along the way.
+
+`scripts/browser-use-apikey.sh` passes its dress rehearsal (`scripts/rehearse-browser-use.sh`) in both the redirect and the popup variant: exactly one key created, file mode 600, and the key doesn't appear in the script output or the session log.
+
+**Not verified here:** the real browser-use + Google run needs aleks's account. GitHub sign-in and clicking Done by hand are also untested. A Google sign-in done by hand with v1 does work headless: the default profile loads `myaccount.google.com` signed in, while a throwaway profile gets the signed-out page.
 
 ## Upgrading from v1 (`auth <account> <url>`)
 
