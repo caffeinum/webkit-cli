@@ -81,7 +81,7 @@ Fixture page `/snapshot` on the local server, containing: nav + headings, a hidd
 
 ## sign-off
 
-- [ ] S1–S12 green (QA)
-- [ ] README: snapshot, the ref rules, `--redact`, the JSON schema, and a Security note that snapshot prints secrets as they are; `text` removed everywhere
+- [x] S1–S12 green (QA, cc6e763)
+- [x] README: snapshot, the ref rules, `--redact`, the JSON schema, and a Security note that snapshot prints secrets as they are; `text` removed everywhere (cc6e763)
 - [ ] B1 + B2 by personal
 - [ ] webkit-pm signs off
