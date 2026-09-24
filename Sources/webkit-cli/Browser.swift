@@ -340,7 +340,11 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         case .failure(let error as NSError):
           if let msg = error.userInfo["WKJavaScriptExceptionMessage"] as? String {
             let plain = msg.hasPrefix("Error: ") ? String(msg.dropFirst(7)) : msg
-            c.resume(throwing: CLIError("javascript error: \(plain)"))
+            if plain.hasPrefix("WKCLI: ") {
+              c.resume(throwing: CLIError(String(plain.dropFirst(7)))) // our own message, not a page error
+            } else {
+              c.resume(throwing: CLIError("javascript error: \(plain)"))
+            }
           } else if error.localizedDescription.contains("no longer reachable") {
             c.resume(throwing: Browser.navigatedAway)
           } else {

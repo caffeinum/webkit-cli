@@ -133,7 +133,7 @@ $ webkit-cli click $tab e5
 - `type <ref> <text>` on a `<select>` picks the option by label, then by value. `click` on a checkbox toggles it.
 - **Values are shown as they are**, API keys included (reading them is the point). `--redact` masks secret-looking values as `‹redacted len=N #sha8›`: known prefixes (`sk-`, `bu_`, `ghp_`, `github_pat_`, `xoxb-`, `AKIA`, JWTs, UUID tokens) and any ≥ 24-char run that mixes letters and digits. The hash is computed in the page, so a masked value never leaves it. **Password inputs are never shown**, with or without `--redact`.
 - `--max-chars` (default 8000) is the budget. Text is cut first, then interactive elements. Dialogs are never cut. It ends with `… truncated: N more elements, M chars`.
-- `--json`: `{"title", "url", "truncated", "nodes": [...]}`. Each node has a `role` (`button`, `link`, `input text`, `checkbox`, `select`, …, or `heading`, `text`, and group roles like `nav`/`main`/`form`/`dialog`/`iframe`) and a `name`. Actionable nodes add `ref` and, when present, `value`, `checked`, `options`, `placeholder`, `href` and `state` (a list). Headings add `level`. Groups add `children` (and `modal` for dialogs).
+- `--json`: `{"title", "url", "truncated", "nodes": [...]}`. Every node has `role` and `name` (`""` when there's none). Roles: actionable ones (`button`, `link`, `input text`, `checkbox`, `select`, …), which add `ref` and, when present, `value`, `checked`, `options`, `placeholder`, `href`, `state` (a list); `heading` (adds `level`); `text`; groups (`nav`, `main`, `form`, `dialog`, `iframe`, …) with `children` (dialogs add `modal`); and a cross-origin frame, `{"role": "iframe", "crossOrigin": true, "origin": "…"}`, with no children. `--max-chars` is measured on the text form. `--json` keeps the same nodes, so the JSON can be somewhat longer.
 - `text` was removed. Use `snapshot`, or `eval <tab> 'return document.body.innerText'` for raw text.
 
 ### When a person is needed
@@ -157,7 +157,7 @@ webkit-cli wait  $tab --until-url dashboard --escalate --human-timeout 300
 
 - `~/.config/webkit-cli/` (mode 0700) holds `accounts.json` (name → store UUID) and `sessions/<uuid>.plist`, the saved session cookies. Every file is written 0600. Screenshots are written 0600 too, since they may show secrets.
 - **Cookies are credentials.** Anyone who can read `~/Library/WebKit/webkit-cli/` or `~/.config/webkit-cli/` is logged in as you. Never commit, sync or share them.
-- webkit-cli never prints cookies or passwords. What your `eval` returns is up to you. When a flow creates an API key, write it to a 0600 file or pipe it straight into its destination. Don't return it into a log someone else reads.
+- webkit-cli never prints cookies or passwords. What your `eval` returns is up to you. When a flow creates an API key, write it to a 0600 file or pipe it straight into its destination. Don't return it into a log someone else reads. `snapshot` prints what the page shows, including API keys and tokens, as they are (unless you pass `--redact`). Password fields are never shown. So treat snapshot output like the page itself: don't paste it where others can read it.
 - User agent: Safari's, built from the installed Safari's version (`/Applications/Safari.app/Contents/Info.plist`), because Google sign-in rejects WKWebView's default UA. If that file can't be read, webkit-cli fails instead of guessing.
 
 ## Known gaps

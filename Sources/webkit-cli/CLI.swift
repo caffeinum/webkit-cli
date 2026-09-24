@@ -219,6 +219,12 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
     }
   }
 
+  for sel in [rest.dropFirst().first, opts.untilSelector].compactMap({ $0 }) where ["click", "type", "wait"].contains(verb) {
+    if sel.hasPrefix("ref=") && sel.range(of: "^ref=e[0-9]+$", options: .regularExpression) == nil {
+      throw CLIError("bad ref '\(sel)' — refs look like e7 or ref=e7 (from `snapshot`)", code: ExitCode.usage)
+    }
+  }
+
   switch verb {
   case "help":
     return (.help, opts)

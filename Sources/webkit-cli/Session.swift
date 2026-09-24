@@ -302,8 +302,11 @@ final class Engine {
       var selectorOK = true
       if idle, urlOK, let sel = r.untilSelector {
         let found = try await tab.callJS(findJS + """
-          try { return !!find(selector) } catch (e) { return /^stale ref/.test(e.message) ? false : 'invalid' }
+          try { return !!find(selector) } catch (e) { return /stale ref/.test(e.message) ? 'stale' : 'invalid' }
           """, ["selector": sel])
+        if found as? String == "stale" {
+          throw CLIError("stale ref \(sel): page changed since the snapshot — take a new one")
+        }
         if found as? String == "invalid" {
           throw CLIError("--until-selector is not a valid CSS selector: \(sel)", code: ExitCode.usage)
         }
@@ -417,7 +420,9 @@ private let clickJS = findJS + """
       el.dispatchEvent(type.startsWith('pointer') ? new PointerEvent(type, {...at, pointerType: 'mouse', isPrimary: true}) : new MouseEvent(type, at));
     el.click();
   }, 0);
-  return {tag: el.tagName.toLowerCase(), text: (el.innerText || el.value || el.getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim().slice(0, 80)};
+  const said = (el.labels && el.labels.length ? [...el.labels].map(l => l.innerText).join(' ') : '') ||
+    el.getAttribute('aria-label') || el.innerText || (el.type === 'checkbox' || el.type === 'radio' ? '' : el.value) || '';
+  return {tag: el.tagName.toLowerCase(), text: said.replace(/\\s+/g, ' ').trim().slice(0, 80)};
   """
 
 private let typeJS = findJS + """
@@ -429,7 +434,7 @@ private let typeJS = findJS + """
   if (tag === 'SELECT') {
     const want = text.trim().toLowerCase();
     const opt = [...el.options].find(o => (o.label || o.text).trim().toLowerCase() === want) || [...el.options].find(o => o.value === text);
-    if (!opt) throw new Error('no option ' + JSON.stringify(text) + ' in ' + selector + ' (options: ' + [...el.options].map(o => o.label || o.text).join(', ') + ')');
+    if (!opt) throw new Error('WKCLI: no option ' + JSON.stringify(text) + ' in ' + selector + ' (options: ' + [...el.options].map(o => o.label || o.text).join(', ') + ')');
     Object.getOwnPropertyDescriptor(win.HTMLSelectElement.prototype, 'value').set.call(el, opt.value);
   } else if (tag === 'INPUT' || tag === 'TEXTAREA') {
     const proto = tag === 'INPUT' ? win.HTMLInputElement.prototype : win.HTMLTextAreaElement.prototype;
@@ -437,7 +442,7 @@ private let typeJS = findJS + """
   } else if (el.isContentEditable) {
     el.textContent = text;
   } else {
-    throw new Error(selector + ' is a <' + tag.toLowerCase() + '>, not an input, textarea, select or editable');
+    throw new Error('WKCLI: ' + selector + ' is a <' + tag.toLowerCase() + '>, not an input, textarea, select or editable');
   }
   el.dispatchEvent(new win.Event('input', {bubbles: true}));
   el.dispatchEvent(new win.Event('change', {bubbles: true}));

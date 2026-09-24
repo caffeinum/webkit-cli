@@ -37,7 +37,7 @@ let findJS = """
     const ref = refOf(sel);
     if (ref) {
       const el = deepRef(document, ref);
-      if (!el || !el.isConnected) throw new Error('stale ref ' + ref + ': page changed since the snapshot — take a new one');
+      if (!el || !el.isConnected) throw new Error('WKCLI: stale ref ' + ref + ': page changed since the snapshot — take a new one');
       return el;
     }
     if (!sel.startsWith('text=')) return document.querySelector(sel);
@@ -47,7 +47,7 @@ let findJS = """
       || all.filter(el => label(el).includes(want)).sort((a, b) => label(a).length - label(b).length)[0]
       || null;
   };
-  const missing = sel => new Error('no element matches ' + sel + '. visible clickables: ' +
+  const missing = sel => new Error('WKCLI: no element matches ' + sel + '. visible clickables: ' +
     JSON.stringify([...new Set(clickables().map(label).filter(Boolean))].slice(0, 25)));
   """
 
@@ -110,7 +110,8 @@ let snapshotJS = #"""
     if (st.display === 'none' || st.visibility === 'hidden' || st.visibility === 'collapse') return true;
     return false;
   };
-  const zeroSize = (el) => !(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+  const noBox = (el) => !el.getClientRects().length && el.ownerDocument.defaultView.getComputedStyle(el).display !== 'contents';
+  const emptyBox = (el) => { const r = el.getBoundingClientRect(); return r.width === 0 && r.height === 0; };
 
   // --- roles and names
   const LANDMARK = { NAV: 'nav', MAIN: 'main', HEADER: 'header', FOOTER: 'footer', ASIDE: 'aside', FORM: 'form' };
@@ -238,12 +239,12 @@ let snapshotJS = #"""
       } else {
         let origin = '?';
         try { origin = new URL(el.src, location.href).origin; } catch (e) {}
-        out.push({ kind: 'text', text: `[iframe cross-origin ${origin}]`, alone: true });
+        out.push({ kind: 'xframe', origin });
       }
       return;
     }
-    if (zeroSize(el) && !el.shadowRoot && tag !== 'DETAILS') return;
-    if (isAction(el, role)) { out.push(actionNode(el, role)); return; }
+    if (noBox(el) && !el.shadowRoot && tag !== 'DETAILS') return;
+    if (isAction(el, role)) { if (!emptyBox(el)) out.push(actionNode(el, role)); return; }
     const h = /^H([1-6])$/.exec(tag);
     if (h || role === 'heading') {
       const level = h ? +h[1] : +(el.getAttribute('aria-level') || 2);
@@ -288,7 +289,7 @@ let snapshotJS = #"""
     for (const n of list) {
       if (n.children) n.children = merge(n.children);
       const prev = out[out.length - 1];
-      if (n.kind === 'text' && prev && prev.kind === 'text' && !n.row && !prev.row && !n.alone && !prev.alone &&
+      if (n.kind === 'text' && prev && prev.kind === 'text' && !n.row && !prev.row &&
           (prev.text.length + n.text.length) < 160) {
         prev.text += ' ' + n.text;
       } else out.push(n);
@@ -303,6 +304,7 @@ let snapshotJS = #"""
     if (n.kind === 'group') return `[${n.label}${n.name ? ' ' + q(n.name) : ''}]`;
     if (n.kind === 'heading') return '#'.repeat(n.level) + ' ' + n.text;
     if (n.kind === 'text') return n.text;
+    if (n.kind === 'xframe') return `[iframe cross-origin ${n.origin}]`;
     let s = `[${n.ref}] ${n.role} ${q(n.name)}`;
     if (n.checked !== undefined) s += n.checked ? ' [x]' : ' [ ]';
     if (n.options) s += ` = ${q(n.value)} (options: ${n.options.join(', ')})`;
@@ -323,7 +325,7 @@ let snapshotJS = #"""
   };
   flatten(tree, 0, false, null);
 
-  const header = [document.title || '(untitled)', location.href];
+  const header = [redact(document.title || '(untitled)'), redact(location.href)];
   let size = header.join('\n').length + flat.reduce((a, e) => a + e.text.length + 1, 0);
   const liveChildren = new Map();
   for (const e of flat) if (e.parent) liveChildren.set(e.parent, (liveChildren.get(e.parent) || 0) + 1);
@@ -355,13 +357,14 @@ let snapshotJS = #"""
         if (n.href) o.href = n.href;
         if (n.state) o.state = n.state;
       } else if (n.kind === 'group') {
-        o.role = n.label; if (n.name) o.name = n.name; if (n.modal) o.modal = true;
+        o.role = n.label; o.name = n.name || ''; if (n.modal) o.modal = true;
         o.children = toJSON(n.children);
       } else if (n.kind === 'heading') { o.role = 'heading'; o.level = n.level; o.name = n.text; }
+      else if (n.kind === 'xframe') { o.role = 'iframe'; o.name = ''; o.crossOrigin = true; o.origin = n.origin; }
       else { o.role = 'text'; o.name = n.text; }
       return o;
     });
-    output = JSON.stringify({ title: document.title, url: location.href, truncated, nodes: toJSON(tree) });
+    output = JSON.stringify({ title: header[0], url: header[1], truncated, nodes: toJSON(tree) });
   } else {
     const lines = [...header, ...flat.filter(e => e.keep).map(e => e.text)];
     if (truncated) lines.push(`… truncated: ${droppedEls} more elements, ${droppedChars} chars (raise --max-chars)`);
