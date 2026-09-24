@@ -207,10 +207,10 @@ ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(
             if q.get("mode") == "popup":
                 return self.send(200, page("Signing in", f"""<h1>signing in…</h1>
 <script>window.opener.postMessage({{code: '{code}'}}, '{APP}'); setTimeout(() => window.close(), 300)</script>"""))
-            ru = q["redirect_uri"]
-            sep = "&" if "?" in ru else "?"
-            # 303 so the POST becomes a GET on the app side
-            self.send(303, "", headers=[("Location", f"{ru}{sep}code={code}&state={q.get('state', '')}")])
+        ru = q["redirect_uri"]
+        sep = "&" if "?" in ru else "?"
+        # 303 so the POST becomes a GET on the app side
+        self.send(303, "", headers=[("Location", f"{ru}{sep}code={code}&state={q.get('state', '')}")])
             return
         return self.send(404, page("404", "<h1>404</h1>"))
 

@@ -66,5 +66,5 @@ Dev ships `scripts/browser-use-apikey.sh` that:
 
 - [x] A1–A14 green (QA, session-mode 21b71d2, logs on beads-r293)
 - [x] README updated: session commands, idle, known gaps (kill -9 cookie loss if any, popup behaviour)
-- [ ] B run by personal: pass (1st run 2026-09-23: blocked by Google's passkey re-verify, waiting on aleks to re-auth)
-- [ ] webkit-pm signs off on beads-r293
+- [x] B run by personal: pass (2026-09-23 23:10, main 884ed22, after aleks re-authed: exit 0, key 0600, API 200 / bogus 401, 0 windows, 0 leak hits)
+- [x] webkit-pm signs off on beads-r293 (2026-09-23)
