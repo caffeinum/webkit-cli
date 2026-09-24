@@ -60,9 +60,11 @@ Dev ships `scripts/browser-use-apikey.sh` that:
 
 **known risks** (dev handles or documents): Google "verify it's you" / passkey prompt when there's no window → the script fails clearly, telling you to re-run `auth google.com`. The browser-use UI's text changes → selectors live in variables at the top of the script.
 
+**observed (personal, 2026-09-23, ac9bcf3):** Google asked to re-verify mid-OAuth ("Use your passkey to confirm it's really you"). The script caught it, named the step and printed the fix. Zero windows, no key minted. The same flow in patched Search (a different profile) got no challenge, so Google's risk engine treats webkit-cli sessions differently (UA/fingerprint, or how recently the session was verified). Fix path: re-run `auth google.com`, pick "More ways to verify" → password/phone. The script also needs a check at the top that fails clearly with `binary not found — set WEBKIT_CLI or PATH` when the binary is missing.
+
 ## sign-off
 
 - [x] A1–A14 green (QA, session-mode 21b71d2, logs on beads-r293)
 - [x] README updated: session commands, idle, known gaps (kill -9 cookie loss if any, popup behaviour)
-- [ ] B run by personal: pass
+- [ ] B run by personal: pass (1st run 2026-09-23: blocked by Google's passkey re-verify, waiting on aleks to re-auth)
 - [ ] webkit-pm signs off on beads-r293

@@ -17,6 +17,10 @@
 set -eu
 
 W=${WEBKIT_CLI:-webkit-cli}
+command -v "$W" >/dev/null 2>&1 || {
+  echo "webkit-cli binary not found ('$W') — build it (swift build -c release) and set WEBKIT_CLI=/path/to/webkit-cli, or put it on PATH as webkit-cli" >&2
+  exit 1
+}
 KEY_FILE=${1:-$HOME/.config/webkit-cli/secrets/browser-use.key}
 KEY_NAME="webkit-cli-$(date +%Y%m%d-%H%M%S)"
 
