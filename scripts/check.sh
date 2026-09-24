@@ -22,6 +22,6 @@ $B text example.com --account - --wait 0 | grep -q 'Example Domain' || fail text
 $B shot example.com --account - "$tmp/shot.png" --wait 0 | grep -q '"title":"Example Domain"' || fail shot
 [ "$(head -c 8 "$tmp/shot.png" | od -An -tx1 | tr -d ' \n')" = 89504e470d0a1a0a ] || fail "shot is not a PNG"
 if $B eval example.com --account - --wait 0 'throw new Error("x")' 2>/dev/null; then fail "js error should exit non-zero"; fi
-set +e; $B open https://example.com --account - --timeout 0.01 2>/dev/null; code=$?; set -e
+set +e; $B text https://example.com --account - --timeout 0.01 2>/dev/null; code=$?; set -e
 [ "$code" = 3 ] || fail "timeout should exit 3, got $code"
 echo "ok: doctor, open refused for -, text, eval, eval+await, shot, js error, timeout"
