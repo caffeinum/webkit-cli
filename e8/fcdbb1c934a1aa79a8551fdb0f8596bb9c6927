@@ -1,0 +1,19 @@
+scripts/check.sh
+  s_81ef76b733b16b::t_beefda7e165af9 17-18,22,27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "e8fcdbb1c934a1aa79a8551fdb0f8596bb9c6927",
+  "prompts": {},
+  "sessions": {
+    "s_81ef76b733b16b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "af2bada9-9bf4-4224-8e84-7eee35c28325",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
