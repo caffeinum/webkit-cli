@@ -243,7 +243,8 @@ final class Engine {
   private func pageInfo(_ b: Browser) async throws -> [String: Any] {
     var info: [String: Any] = [
       "url": b.web.url?.absoluteString ?? NSNull(),
-      "title": b.web.title ?? NSNull(),
+      // WKWebView.title lags the document right after a load; ask the page
+      "title": (try? await b.callJS("return document.title")) ?? b.web.title ?? NSNull(),
       "status": b.lastStatus ?? NSNull(),
       "loading": b.web.isLoading,
     ]
