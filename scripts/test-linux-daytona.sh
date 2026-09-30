@@ -38,10 +38,13 @@ echo "creating sandbox $SB"
 d create --name "$SB" --snapshot "$SNAP" --auto-stop 30 --auto-delete 0 --label purpose=webkit-cli-test | grep -i "created" || { echo "sandbox create failed" >&2; exit 1; }
 
 echo "uploading HEAD ($(git rev-parse --short HEAD)); uncommitted changes are not included"
-git archive --format=tar.gz HEAD | base64 | tr -d '\n' | fold -w 60000 > "$tmp/src.b64"
+git archive --format=tar.gz HEAD > "$tmp/src.tgz"
+sum=$(shasum -a 256 "$tmp/src.tgz" | cut -c1-64)
+base64 < "$tmp/src.tgz" | tr -d '\n' | fold -w 60000 > "$tmp/src.b64"
+echo >> "$tmp/src.b64"
 run "rm -f /tmp/src.b64 && mkdir -p /root/webkit-cli" 60
-while IFS= read -r chunk; do run "printf %s '$chunk' >> /tmp/src.b64" 60 >/dev/null; done < "$tmp/src.b64"
-run "base64 -d /tmp/src.b64 | tar -xz -C /root/webkit-cli" 60
+while IFS= read -r chunk; do [ -n "$chunk" ] && run "printf %s '$chunk' >> /tmp/src.b64" 60 >/dev/null; done < "$tmp/src.b64"
+run "base64 -d /tmp/src.b64 > /tmp/src.tgz && echo '$sum  /tmp/src.tgz' | sha256sum -c --quiet && tar -xzf /tmp/src.tgz -C /root/webkit-cli" 60
 
 echo "building"
 run "cd /root/webkit-cli && swift build -c release 2>&1 | grep -E 'error:|Build complete'"
