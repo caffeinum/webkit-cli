@@ -1,0 +1,33 @@
+Sources/webkit-cli/CLI.swift
+  s_81ef76b733b16b::t_d843c1212d8dbc 100-104
+Sources/webkit-cli/Commands.swift
+  s_81ef76b733b16b::t_8d5e731ebd994b 1,105,112-113,123
+Sources/webkit-cli/Mac/AuthBar.swift
+  s_81ef76b733b16b::t_c42e412a344e3f 1,103
+Sources/webkit-cli/Mac/Browser.swift
+  s_81ef76b733b16b::t_40cf2d666e5a64 1,49-52,397
+Sources/webkit-cli/Mac/MacPlatform.swift
+  s_81ef76b733b16b::t_415a40a5e4ae73 1-121
+Sources/webkit-cli/Mac/SessionCookies.swift
+  s_81ef76b733b16b::t_b197d379eae93a 1,34
+Sources/webkit-cli/Session.swift
+  s_81ef76b733b16b::t_f7e48c289fb738 1,120-121,209,296,298,315,332,341,346,360,389,391,393
+Sources/webkit-cli/main.swift
+  s_81ef76b733b16b::t_dae0dfec4c148b 1,17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "f39b3b6311c8a61def74fabec6e98e7aa80e488b",
+  "prompts": {},
+  "sessions": {
+    "s_81ef76b733b16b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "af2bada9-9bf4-4224-8e84-7eee35c28325",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
