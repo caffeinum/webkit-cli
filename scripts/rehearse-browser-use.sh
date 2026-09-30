@@ -5,7 +5,7 @@
 set -eu
 cd "$(dirname "$0")"
 profile=$1
-wrapper=$(mktemp -t wk-rehearse)
+wrapper=$(mktemp "${TMPDIR:-/tmp}/wk-rehearse.XXXXXX")
 trap 'rm -f "$wrapper"' EXIT
 printf '#!/bin/sh\nexec %s "$@" --account %s\n' "${WEBKIT_CLI:-webkit-cli}" "$profile" >"$wrapper"
 chmod +x "$wrapper"

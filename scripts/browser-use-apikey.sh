@@ -56,7 +56,7 @@ key_made=0
 fail() {
   echo "FAIL at step '$step': $*" >&2
   if [ -n "$tab" ] && [ "$key_made" = 0 ]; then
-    shot=$(mktemp -t browser-use-fail).png
+    shot=$(mktemp "${TMPDIR:-/tmp}/browser-use-fail.XXXXXX").png
     "$W" shot "$tab" "$shot" >/dev/null 2>&1 && echo "screenshot of the failing page (0600): $shot" >&2
   fi
   [ -n "$tab" ] && "$W" close "$tab" >/dev/null 2>&1
@@ -166,4 +166,4 @@ chmod 600 "$KEY_FILE"
 
 step="close"
 "$W" close "$tab" >/dev/null
-echo "saved browser-use API key '$KEY_NAME' → $KEY_FILE (mode $(stat -f %Lp "$KEY_FILE"), sha256 $(shasum -a 256 "$KEY_FILE" | cut -c1-8))"
+echo "saved browser-use API key '$KEY_NAME' → $KEY_FILE (mode $(stat -f %Lp "$KEY_FILE" 2>/dev/null || stat -c %a "$KEY_FILE"), sha256 $( (sha256sum "$KEY_FILE" 2>/dev/null || shasum -a 256 "$KEY_FILE") | cut -c1-8))"
