@@ -1,0 +1,4 @@
+module CWPE [system] {
+  header "shim.h"
+  export *
+}

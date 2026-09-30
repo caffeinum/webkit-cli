@@ -1,5 +1,39 @@
-import AppKit
+import Foundation
+#if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+import WPEShim
+#endif
+
+// the few POSIX spellings that differ between macOS and Linux
+#if os(Linux)
+private let streamSocket = Int32(SOCK_STREAM.rawValue)
+private let spawnSetSID: Int16 = 0x80 // POSIX_SPAWN_SETSID (glibc)
+private func newSpawnActions() -> posix_spawn_file_actions_t { posix_spawn_file_actions_t() }
+private func newSpawnAttr() -> posix_spawnattr_t { posix_spawnattr_t() }
+private func posixConnect(_ fd: Int32, _ addr: UnsafePointer<sockaddr>, _ len: socklen_t) -> Int32 { Glibc.connect(fd, addr, len) }
+/// Linux has no SO_NOSIGPIPE; the session ignores SIGPIPE, and a client does the same.
+private func noSigpipe(_ fd: Int32) { signal(SIGPIPE, SIG_IGN) }
+private func peerUID(_ fd: Int32) -> uid_t? {
+  var uid: UInt32 = 0
+  return wk_peer_uid(fd, &uid) == 0 ? uid : nil
+}
+#else
+private let streamSocket = SOCK_STREAM
+private let spawnSetSID = Int16(POSIX_SPAWN_SETSID)
+private func newSpawnActions() -> posix_spawn_file_actions_t? { nil }
+private func newSpawnAttr() -> posix_spawnattr_t? { nil }
+private func posixConnect(_ fd: Int32, _ addr: UnsafePointer<sockaddr>, _ len: socklen_t) -> Int32 { Darwin.connect(fd, addr, len) }
+private func noSigpipe(_ fd: Int32) {
+  var on: Int32 = 1
+  setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+}
+private func peerUID(_ fd: Int32) -> uid_t? {
+  var uid: uid_t = 0, gid: gid_t = 0
+  return getpeereid(fd, &uid, &gid) == 0 ? uid : nil
+}
+#endif
 
 /// One long-lived process per profile holds its tabs, so multi-page flows (OAuth redirects, "click then
 /// read") survive between commands, and session-only cookies stay alive. Commands reach it over a unix
@@ -86,16 +120,16 @@ enum SessionClient {
   private static func spawnServer(account: String, idle: Double) throws {
     guard let exe = Bundle.main.executablePath else { throw CLIError("cannot find own executable path") }
     let logPath = SessionPaths.log(account)
-    var actions: posix_spawn_file_actions_t?
+    var actions = newSpawnActions()
     posix_spawn_file_actions_init(&actions)
     defer { posix_spawn_file_actions_destroy(&actions) }
     posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
     posix_spawn_file_actions_addopen(&actions, 1, logPath, O_WRONLY | O_CREAT | O_APPEND, 0o600)
     posix_spawn_file_actions_adddup2(&actions, 1, 2)
-    var attr: posix_spawnattr_t?
+    var attr = newSpawnAttr()
     posix_spawnattr_init(&attr)
     defer { posix_spawnattr_destroy(&attr) }
-    posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSID))
+    posix_spawnattr_setflags(&attr, spawnSetSID)
     let args = [exe, "serve", "--account", account, "--idle", String(idle)]
     var argv = args.map { strdup($0) } + [nil]
     defer { argv.forEach { free($0) } }
@@ -167,13 +201,11 @@ final class SessionServer {
       while true {
         let client = accept(fd, nil, nil)
         if client < 0 { continue }
-        var uid: uid_t = 0, gid: gid_t = 0
-        guard getpeereid(client, &uid, &gid) == 0, uid == getuid() else {
+        guard peerUID(client) == getuid() else {
           close(client)
           continue
         }
-        var on: Int32 = 1
-        setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+        noSigpipe(client)
         let data = (try? readLine(client)) ?? Data()
         if data.isEmpty {
           // a liveness probe (another session starting up checks whether we serve): nothing to answer
@@ -392,13 +424,12 @@ private func sockaddr(_ path: String) throws -> sockaddr_un {
 
 private func connect(_ path: String) throws -> Int32 {
   var addr = try sockaddr(path)
-  let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+  let fd = socket(AF_UNIX, streamSocket, 0)
   guard fd >= 0 else { throw CLIError("socket(): \(String(cString: strerror(errno)))") }
   let rc = withUnsafePointer(to: &addr) {
-    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { posixConnect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
   }
-  var on: Int32 = 1
-  setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+  noSigpipe(fd)
   guard rc == 0 else {
     close(fd)
     throw CLIError("connect(\(path)): \(String(cString: strerror(errno)))")
@@ -408,7 +439,7 @@ private func connect(_ path: String) throws -> Int32 {
 
 private func listenUnix(_ path: String) throws -> Int32 {
   var addr = try sockaddr(path)
-  let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+  let fd = socket(AF_UNIX, streamSocket, 0)
   guard fd >= 0 else { throw CLIError("socket(): \(String(cString: strerror(errno)))") }
   let old = umask(0o077)
   defer { umask(old) }
