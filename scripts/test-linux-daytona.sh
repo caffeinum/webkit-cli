@@ -20,6 +20,24 @@ run() { # run a shell command in the sandbox; its output streams back, its exit 
   [ "${rc:-1}" = 0 ]
 }
 
+# long jobs run fully detached in the sandbox (Daytona's exec waits on every descendant and its
+# proxy can drop long requests), and we poll their log until they write their exit code
+job() {
+  name=$1; cmd=$2; limit=${3:-900}
+  printf '%s\n' "$cmd" > "$tmp/$name.sh"
+  b64=$(base64 < "$tmp/$name.sh" | tr -d '\n')
+  run "echo $b64 | base64 -d > /tmp/$name.sh && rm -f /tmp/$name.log && setsid -f sh -c 'sh /tmp/$name.sh > /tmp/$name.log 2>&1; echo __done=\$? >> /tmp/$name.log' </dev/null >/dev/null 2>&1" 60
+  waited=0
+  while :; do
+    sleep 5; waited=$((waited + 5))
+    d exec "$SB" --timeout 30 -- "cat /tmp/$name.log 2>/dev/null" > "$tmp/$name.log" || true
+    if grep -q '^__done=' "$tmp/$name.log"; then break; fi
+    [ $waited -lt "$limit" ] || { cat "$tmp/$name.log"; echo "$name: no result after ${limit}s" >&2; return 1; }
+  done
+  grep -v '^__done=' "$tmp/$name.log"
+  [ "$(grep -o '^__done=[0-9]*' "$tmp/$name.log" | cut -d= -f2)" = 0 ]
+}
+
 tmp=$(mktemp -d)
 SNAP="webkit-cli-linux-$(shasum -a 256 linux/Dockerfile | cut -c1-12)"
 SB="wkcli-test-$(date +%s)"
@@ -60,13 +78,17 @@ else
 fi
 
 echo "suite: check-session.sh (local fixture)"
-run "cd /root/webkit-cli && $NOSANDBOX BIN=.build/release/webkit-cli sh scripts/check-session.sh"
+job session "cd /root/webkit-cli && $NOSANDBOX BIN=.build/release/webkit-cli sh scripts/check-session.sh"
+
 echo "suite: browser-use rehearsal (redirect + popup)"
-run "cd /root/webkit-cli && python3 scripts/fixtures/oauth_server.py >/tmp/fixture.log 2>&1 & sleep 1; \
-  cd /root/webkit-cli/scripts && export $NOSANDBOX WEBKIT_CLI=/root/webkit-cli/.build/release/webkit-cli; \
-  python3 -c \"import json,uuid,os; p=os.path.expanduser('~/.config/webkit-cli/accounts.json'); d=json.load(open(p)) if os.path.exists(p) else {}; d['rehearse']=str(uuid.uuid4()).upper(); json.dump(d,open(p,'w'))\" && \
-  sh rehearse-browser-use.sh rehearse /tmp/k1 && \$WEBKIT_CLI forget rehearse >/dev/null && \
-  python3 -c \"import json,uuid,os; p=os.path.expanduser('~/.config/webkit-cli/accounts.json'); d=json.load(open(p)); d['rehearse']=str(uuid.uuid4()).upper(); json.dump(d,open(p,'w'))\" && \
-  SIGNIN_URL=http://127.0.0.1:8765/signin-popup GOOGLE_BUTTON='text=Sign in' sh rehearse-browser-use.sh rehearse /tmp/k2 && \
-  stat -c %a /tmp/k1 /tmp/k2"
+job rehearsal "set -e
+cd /root/webkit-cli
+python3 scripts/fixtures/oauth_server.py >/tmp/fixture.log 2>&1 &
+sleep 1
+export $NOSANDBOX WEBKIT_CLI=/root/webkit-cli/.build/release/webkit-cli
+profile() { python3 -c \"import json,uuid,os; p=os.path.expanduser('~/.config/webkit-cli/accounts.json'); d=json.load(open(p)) if os.path.exists(p) else {}; d['rehearse']=str(uuid.uuid4()).upper(); json.dump(d,open(p,'w'))\"; }
+profile; sh scripts/rehearse-browser-use.sh rehearse /tmp/k1; \$WEBKIT_CLI stop --account rehearse; \$WEBKIT_CLI forget rehearse
+profile; SIGNIN_URL=http://127.0.0.1:8765/signin-popup GOOGLE_BUTTON='text=Sign in' sh scripts/rehearse-browser-use.sh rehearse /tmp/k2; \$WEBKIT_CLI stop --account rehearse; \$WEBKIT_CLI forget rehearse
+stat -c '%a %n' /tmp/k1 /tmp/k2
+kill %1"
 echo "PASS: webkit-cli on Linux (Daytona sandbox $SB, deleted on exit)"
