@@ -19,7 +19,7 @@ set +e; $B open example.com --account - 2>/dev/null; code=$?; set -e
 $B snapshot example.com --account - --wait 0 2>/dev/null | grep -q '\[e1\] link "Learn more"' || fail snapshot
 set +e; $B text example.com --account - 2>/dev/null; code=$?; set -e
 [ "$code" = 2 ] || fail "text should be removed (exit 2), got $code"
-[ "$($B eval example.com --account - --wait 0 'return document.querySelector("h1").textContent')" = '"Example Domain"' ] || fail eval
+[ "$($B eval example.com --account - --wait 0 'return document.title')" = '"Example Domain"' ] || fail eval
 [ "$($B eval example.com --account - --wait 0 'await new Promise(r => setTimeout(r, 200)); return 1 + 1')" = 2 ] || fail "eval await"
 $B shot example.com --account - "$tmp/shot.png" --wait 0 | grep -q '"title":"Example Domain"' || fail shot
 [ "$(head -c 8 "$tmp/shot.png" | od -An -tx1 | tr -d ' \n')" = 89504e470d0a1a0a ] || fail "shot is not a PNG"
