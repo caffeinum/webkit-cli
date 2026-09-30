@@ -1,0 +1,21 @@
+scripts/check-session.sh
+  s_b66ec66ccad470::t_e6b88eaf16bd18 26
+scripts/test-linux-daytona.sh
+  s_b66ec66ccad470::t_5e985a0ea911a4 68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "f1fdd4c6d0939a32831a22431c4fb783d1573b9f",
+  "prompts": {},
+  "sessions": {
+    "s_b66ec66ccad470": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eb587d4d-ce6d-4eca-83b9-8bce69c296a8",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
