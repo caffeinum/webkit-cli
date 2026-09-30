@@ -1,0 +1,21 @@
+scripts/browser-use-apikey.sh
+  s_81ef76b733b16b::t_f2f2fdfa3623f7 59,169
+scripts/rehearse-browser-use.sh
+  s_81ef76b733b16b::t_b6dde298d39f72 8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "d8290a11f14fc979b588ee987426e204ad1a8e84",
+  "prompts": {},
+  "sessions": {
+    "s_81ef76b733b16b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "af2bada9-9bf4-4224-8e84-7eee35c28325",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Aleksey Bykhun <theisease@gmail.com>"
+    }
+  }
+}
