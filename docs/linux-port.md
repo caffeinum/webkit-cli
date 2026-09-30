@@ -108,7 +108,7 @@ The same flow also passed locally in docker (arm64), where the screenshot render
 - **WebKit's own sandbox** (bubblewrap) needs unprivileged user namespaces plus a `/proc` mount. Docker's default and Daytona both block that. webkit-cli now checks up front and fails loudly with the fix: use `--privileged` in docker, or set `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1`. The Daytona run used the env var, since the sandbox VM is the isolation boundary there. That's a trade-off worth a decision.
 - **Daytona egress looks restricted**, probably on this account's tier (unverified): example.com got a TLS reset, and GitHub's CSS host didn't load, so that screenshot is unstyled. Pages from allowed hosts work.
 - **The main loop worked first try.** GLib runs the main thread and drains libdispatch's main-queue eventfd, so `@MainActor` code, the session daemon's socket threads and WebKit coexist.
-- **The shim is small:** C `wpeshim.c` is ~270 lines; Swift `Linux/` is ~350 lines. Shared code (CLI, Engine, daemon, snapshot JS) is reused unchanged apart from the Glibc spellings.
+- **The backend is small:** the C shim is ~330 lines (`wpeshim.c` + header); Swift `Linux/` is ~410 lines. Shared code (CLI, Engine, daemon, snapshot JS) is reused unchanged apart from the Glibc spellings.
 
 **Not done / next:**
 - `auth` / `show` / `--escalate` on Linux: headless-only, and they fail with a clear message.
