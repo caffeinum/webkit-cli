@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import WebKit
 
@@ -99,3 +100,4 @@ private final class DoneButton: NSButton {
 
   @objc private func fire() { handler?() }
 }
+#endif

@@ -97,6 +97,11 @@ let helpText = """
   """
 
 enum Command {
+  var isAuth: Bool {
+    if case .auth = self { return true }
+    return false
+  }
+
   case help
   case accounts
   case auth(account: String, url: URL)

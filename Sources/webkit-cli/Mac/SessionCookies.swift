@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import WebKit
 
@@ -30,3 +31,4 @@ enum SessionCookies {
     }
   }
 }
+#endif

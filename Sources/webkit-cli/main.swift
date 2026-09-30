@@ -1,4 +1,4 @@
-import AppKit
+import Foundation
 
 let parsed: (Command, Options)
 do {
@@ -14,20 +14,4 @@ do {
   die(error)
 }
 
-MainActor.assumeIsolated {
-  let app = NSApplication.shared
-  if case .auth = command {
-    app.setActivationPolicy(.regular)
-  } else {
-    app.setActivationPolicy(.accessory)
-  }
-  Task { @MainActor in
-    do {
-      try await run(command, options)
-      exit(0)
-    } catch {
-      die(error)
-    }
-  }
-  app.run()
-}
+startApp(command, options)

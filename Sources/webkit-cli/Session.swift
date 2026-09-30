@@ -1,5 +1,4 @@
-import AppKit
-import WebKit
+import Foundation
 
 /// One command for a profile's session. Crosses the unix socket as a JSON line.
 struct Request: Codable {
@@ -118,8 +117,8 @@ final class Engine {
       var rows: [[String: Any]] = []
       for id in tabs.keys.sorted() {
         let t = tabs[id]!
-        var row: [String: Any] = ["tab": id, "url": t.web.url?.absoluteString ?? NSNull(), "title": t.web.title ?? NSNull(),
-                                  "loading": t.web.isLoading, "shown": t.isShown]
+        var row: [String: Any] = ["tab": id, "url": t.url?.absoluteString ?? NSNull(), "title": t.title ?? NSNull(),
+                                  "loading": t.isLoading, "shown": t.isShown]
         if let opener = openers[id] { row["opener"] = opener }
         rows.append(row)
       }
@@ -207,7 +206,7 @@ final class Engine {
   /// Where a tab is right now, for error messages.
   func location(of target: String?) -> String? {
     guard let target, let tab = tabs[target] else { return nil }
-    return tab.web.url?.absoluteString
+    return tab.url?.absoluteString
   }
 
   func closeAll() {
@@ -294,9 +293,9 @@ final class Engine {
         humanSince = nil
       }
       try await escalateIfChallenged(id, r, deadline: deadline)
-      let idle = !tab.web.isLoading
+      let idle = !tab.isLoading
       let urlOK = try r.untilURL.map { pattern in
-        let url = tab.web.url?.absoluteString ?? ""
+        let url = tab.url?.absoluteString ?? ""
         return try NSRegularExpression(pattern: pattern).firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil
       } ?? true
       var selectorOK = true
@@ -313,7 +312,7 @@ final class Engine {
         selectorOK = found as? Bool ?? false
       }
       if idle && urlOK && selectorOK && (hasConditions || r.untilHidden != true) { return }
-      if deadline.expired { throw timeoutError(r, url: tab.web.url?.absoluteString) }
+      if deadline.expired { throw timeoutError(r, url: tab.url?.absoluteString) }
       try await Task.sleep(nanoseconds: 200_000_000)
     }
   }
@@ -330,7 +329,7 @@ final class Engine {
       if let t = tabs[cid], try await isChallenge(t, r) { hit = (cid, t); break }
     }
     guard let (cid, t) = hit else { return }
-    let reason = "this page needs a person (\(t.web.url?.host ?? "?")) — finish it in the window; it closes by itself, or click Done"
+    let reason = "this page needs a person (\(t.url?.host ?? "?")) — finish it in the window; it closes by itself, or click Done"
     try t.show(reason: reason)
     noteNeedsYou(reason, cid)
     deadline.pause()
@@ -339,12 +338,12 @@ final class Engine {
     while true {
       try await Task.sleep(nanoseconds: 300_000_000)
       if t.isClosed || !t.isShown { break } // popup finished and closed itself, or Done
-      if !t.web.isLoading, try await !isChallenge(t, r) { break }
+      if !t.isLoading, try await !isChallenge(t, r) { break }
       if Date() > giveUp {
         t.hide()
         throw CLIError("""
           no one finished the human step within \(Int(r.humanTimeout ?? defaultHumanTimeout))s \
-          (tab \(cid) is at \(t.web.url?.absoluteString ?? "?")) — raise --human-timeout
+          (tab \(cid) is at \(t.url?.absoluteString ?? "?")) — raise --human-timeout
           """, code: ExitCode.timeout)
       }
     }
@@ -358,7 +357,7 @@ final class Engine {
   }
 
   private func isChallenge(_ tab: Browser, _ r: Request) async throws -> Bool {
-    let url = tab.web.url?.absoluteString ?? ""
+    let url = tab.url?.absoluteString ?? ""
     for pattern in builtinChallengeURLs + (r.challengeURLs ?? []) {
       let re = try NSRegularExpression(pattern: pattern)
       if re.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil { return true }
@@ -387,11 +386,11 @@ final class Engine {
 
   private func pageInfo(_ b: Browser) async throws -> [String: Any] {
     var info: [String: Any] = [
-      "url": b.web.url?.absoluteString ?? NSNull(),
+      "url": b.url?.absoluteString ?? NSNull(),
       // WKWebView.title lags the document right after a load; ask the page
-      "title": (try? await b.callJS("return document.title")) ?? b.web.title ?? NSNull(),
+      "title": (try? await b.callJS("return document.title")) ?? b.title ?? NSNull(),
       "status": b.lastStatus ?? NSNull(),
-      "loading": b.web.isLoading,
+      "loading": b.isLoading,
     ]
     if let failure = b.lastFailure { info["failure"] = failure }
     return info

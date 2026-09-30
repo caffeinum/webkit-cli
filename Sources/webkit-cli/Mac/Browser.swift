@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import WebKit
 
@@ -45,6 +46,10 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
   let window: NSWindow
   let visible: Bool
   private(set) var lastStatus: Int?
+  var url: URL? { web.url }
+  var title: String? { web.title }
+  var isLoading: Bool { web.isLoading }
+  var userAgent: String? { web.customUserAgent }
   /// Next snapshot ref number for this tab. Never goes back, so a ref can't be reused, even across pages.
   var nextRef = 1
   /// The most recent main-frame load error, even one nobody was awaiting (e.g. after a click).
@@ -389,3 +394,4 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     closed = nil
   }
 }
+#endif
