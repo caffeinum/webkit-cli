@@ -166,4 +166,4 @@ chmod 600 "$KEY_FILE"
 
 step="close"
 "$W" close "$tab" >/dev/null
-echo "saved browser-use API key '$KEY_NAME' → $KEY_FILE (mode $(stat -f %Lp "$KEY_FILE" 2>/dev/null || stat -c %a "$KEY_FILE"), sha256 $( (sha256sum "$KEY_FILE" 2>/dev/null || shasum -a 256 "$KEY_FILE") | cut -c1-8))"
+echo "saved browser-use API key '$KEY_NAME' → $KEY_FILE (mode $(stat -c %a "$KEY_FILE" 2>/dev/null || stat -f %Lp "$KEY_FILE"), sha256 $( (sha256sum "$KEY_FILE" 2>/dev/null || shasum -a 256 "$KEY_FILE") | cut -c1-8))"

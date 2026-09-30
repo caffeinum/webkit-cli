@@ -84,11 +84,12 @@ echo "suite: browser-use rehearsal (redirect + popup)"
 job rehearsal "set -e
 cd /root/webkit-cli
 python3 scripts/fixtures/oauth_server.py >/tmp/fixture.log 2>&1 &
+fixture=\$!
 sleep 1
 export $NOSANDBOX WEBKIT_CLI=/root/webkit-cli/.build/release/webkit-cli
 profile() { python3 -c \"import json,uuid,os; p=os.path.expanduser('~/.config/webkit-cli/accounts.json'); d=json.load(open(p)) if os.path.exists(p) else {}; d['rehearse']=str(uuid.uuid4()).upper(); json.dump(d,open(p,'w'))\"; }
 profile; sh scripts/rehearse-browser-use.sh rehearse /tmp/k1; \$WEBKIT_CLI stop --account rehearse; \$WEBKIT_CLI forget rehearse
 profile; SIGNIN_URL=http://127.0.0.1:8765/signin-popup GOOGLE_BUTTON='text=Sign in' sh scripts/rehearse-browser-use.sh rehearse /tmp/k2; \$WEBKIT_CLI stop --account rehearse; \$WEBKIT_CLI forget rehearse
 stat -c '%a %n' /tmp/k1 /tmp/k2
-kill %1"
+kill \$fixture"
 echo "PASS: webkit-cli on Linux (Daytona sandbox $SB, deleted on exit)"
