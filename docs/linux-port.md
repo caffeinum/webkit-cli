@@ -82,3 +82,37 @@ It's packaged and gives screenshots and async scripts for free. But it needs one
    - `shot <tab> out.png` produces a real PNG
    - `doctor` reports `visible` with rAF > 0
 4. Then report back before the rest (auth/cookie import, escalate stubs, packaging).
+
+## Phase 2 results: spike (2026-09-30)
+
+On branch `linux`: `c2b7d84` (backend) + `f39b3b6` (mac code moved into `Mac/`, no behaviour change). The macOS build passes `scripts/check.sh` on this branch.
+
+**Daytona sandbox** (x86_64, Debian trixie + sid WPE 2.54, built from `linux/Dockerfile`; deleted afterwards):
+
+| step | result |
+|---|---|
+| `swift build -c release` in the sandbox | ✔ |
+| `doctor` | ✔ `visibilityState: "visible"`, **60 rAF/s**, 83 timer ticks/s. No occlusion tricks needed |
+| `open https://github.com/login` | ✔ tab id, status 200, title |
+| `snapshot <tab>` | ✔ same refs/format as macOS (`[e2] input text "Username…"`, password `‹password›`) |
+| `type <tab> e2 …` → `snapshot` | ✔ value shows up |
+| `shot <tab> /tmp/x.png` | ✔ 1280×800 PNG |
+| `click <tab> 'text=Forgot password?'` | ✔ navigates, tab survives |
+| `eval` | ✔ `{"title":…,"vis":"visible"}` |
+| persistence | ✔ a cookie + localStorage survive `stop` → new session |
+| `forget` | ✔ profile dirs + run files removed |
+
+The same flow also passed locally in docker (arm64), where the screenshot rendered fully styled.
+
+**Found along the way:**
+- **WebKit's own sandbox** (bubblewrap) needs unprivileged user namespaces plus a `/proc` mount. Docker's default and Daytona both block that. webkit-cli now checks up front and fails loudly with the fix: use `--privileged` in docker, or set `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1`. The Daytona run used the env var, since the sandbox VM is the isolation boundary there. That's a trade-off worth a decision.
+- **Daytona egress looks restricted**, probably on this account's tier (unverified): example.com got a TLS reset, and GitHub's CSS host didn't load, so that screenshot is unstyled. Pages from allowed hosts work.
+- **The main loop worked first try.** GLib runs the main thread and drains libdispatch's main-queue eventfd, so `@MainActor` code, the session daemon's socket threads and WebKit coexist.
+- **The shim is small:** C `wpeshim.c` is ~270 lines; Swift `Linux/` is ~350 lines. Shared code (CLI, Engine, daemon, snapshot JS) is reused unchanged apart from the Glibc spellings.
+
+**Not done / next:**
+- `auth` / `show` / `--escalate` on Linux: headless-only, and they fail with a clear message.
+- Cookie import from a macOS profile.
+- A slim runtime image (the build image is ~1.4 GB + WPE).
+- Snapshot text on pages that split words into per-letter spans (the new example.com), which comes out letter-spaced on both OSes.
+- A Linux `check.sh` job.
