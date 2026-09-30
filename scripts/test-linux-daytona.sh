@@ -65,7 +65,7 @@ while IFS= read -r chunk; do [ -n "$chunk" ] && run "printf %s '$chunk' >> /tmp/
 run "base64 -d /tmp/src.b64 > /tmp/src.tgz && echo '$sum  /tmp/src.tgz' | sha256sum -c --quiet && tar -xzf /tmp/src.tgz -C /root/webkit-cli" 60
 
 echo "building"
-run "cd /root/webkit-cli && swift build -c release 2>&1 | grep -E 'error:|Build complete'"
+job build "cd /root/webkit-cli && swift build -c release 2>&1 | grep -E 'error:|Build complete'" 1200
 
 # WebKit sandboxes its web processes with bubblewrap; a container sandbox blocks the namespaces it
 # needs, so there we run with WebKit's sandbox off and the Daytona sandbox as the isolation.

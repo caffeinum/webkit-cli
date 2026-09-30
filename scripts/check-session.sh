@@ -23,7 +23,7 @@ FIXTURE=$!
 cleanup() {
   $B stop $A >/dev/null 2>&1 || true
   $B forget "$P" >/dev/null 2>&1 || true
-  kill $FIXTURE 2>/dev/null || true
+  kill $FIXTURE 2>/dev/null && wait $FIXTURE 2>/dev/null || true
   rm -rf "$tmp"
 }
 trap cleanup EXIT
