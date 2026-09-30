@@ -6,4 +6,5 @@ RUN echo "deb http://deb.debian.org/debian sid main" > /etc/apt/sources.list.d/s
  && apt-get update \
  && apt-get install -y --no-install-recommends -t sid libwpewebkit-2.0-dev libcairo2-dev pkg-config ca-certificates \
     gstreamer1.0-plugins-base bubblewrap fonts-dejavu-core \
+    libwayland-dev weston \
  && rm -rf /var/lib/apt/lists/*

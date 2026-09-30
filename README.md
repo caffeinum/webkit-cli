@@ -53,10 +53,12 @@ docker run --rm -it -v "$PWD":/src -w /src webkit-cli-linux swift build -c relea
 
 On Linux:
 - The same commands, session daemon, `snapshot` refs and exit codes as on macOS. Profiles live in `~/.local/share/webkit-cli/profiles/<uuid>` (not keyed by the binary name).
-- It's **headless only**. `auth`, `show` and `--escalate` need a window, so they fail with a clear message (exit 1). To use a signed-in profile on Linux today, sign in on macOS. Moving cookies across is planned, not built.
+- **Windows need Wayland.** Tabs are headless, and `auth`, `show` and `--escalate` open real windows on your Wayland session (`$WAYLAND_DISPLAY`). WPE has no X11 support; on X11, run a Wayland compositor as a window (`weston --backend=x11`) and point `WAYLAND_DISPLAY` at it. Without a display these commands exit 1 and say so.
+  - `auth`: same as macOS. Sign in, then close the window (or Ctrl-C) to save.
+  - `show` / `--escalate`: a WPE page can't move from the headless display to the screen. So the window is a second view on the **same profile** at the tab's page: cookies carry over, in-page JS state doesn't. While it's up, the headless copy is parked on `about:blank` so the page never runs twice, and commands on the tab act on the window. Closing the window (or `hide`, or the challenge page going away) hands back: the headless tab continues at the page the person ended on. There's no Done bar on Linux; close the window instead.
 - **WebKit's own sandbox** (bubblewrap) needs unprivileged user namespaces and a `/proc` mount. Most containers block that (docker's default, Daytona). webkit-cli checks at startup and stops with the fix: run with `--privileged`, or set `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1` so the container is the isolation instead. It never turns the sandbox off by itself.
 
-Tested on Daytona with `scripts/test-linux-daytona.sh`: it creates a sandbox, uploads HEAD, builds, runs the session suite and the browser-use rehearsal against a local fixture, then deletes the sandbox. `scripts/check-session.sh` runs the same suite on either OS.
+Tested on Daytona with `scripts/test-linux-daytona.sh`: it creates a sandbox, uploads HEAD, builds, runs the session suite, the window suite (`scripts/check-windows-linux.sh`, under a headless weston) and the browser-use rehearsal against a local fixture, then deletes the sandbox. `scripts/check-session.sh` runs the same suite on either OS.
 
 ## Commands
 

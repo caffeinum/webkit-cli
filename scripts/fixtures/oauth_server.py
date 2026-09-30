@@ -4,7 +4,8 @@
 Two origins on 127.0.0.1: app (default :8765) and idp (default :8766).
 Usage: scripts/fixtures/oauth_server.py [app_port] [idp_port]
 ?challenge=1 on /signin or /signin-popup makes the idp insert a fake "confirm it's you" step
-(idp /challenge: #code + Continue) between login and callback.
+(idp /challenge: #code + Continue) between login and callback. ?challenge=auto does the same, but the
+challenge page fills and submits itself after 3s: a stand-in for a person where no one can click.
 Request log → stderr: method, path, query/cookie *names* only. Never values or bodies: a person may type
 real input into a shown window. Clicks recorded by /hit are kept in memory only (GET /hit/log).
 """
@@ -245,7 +246,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(
             user = q.get("user", "").strip()
             if not user:
                 return self.send(400, page("IdP error", "<h1>username required</h1>"))
-            if q.get("challenge") == "1":
+            if q.get("challenge") in ("1", "auto"):
                 token = secrets.token_hex(8)
                 with lock:
                     pending[token] = {**q, "user": user}
@@ -266,7 +267,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(
 <p>Enter the code we sent to your device.</p>{error}
 <form method=post action="/challenge"><input type=hidden name=t value="{q['t']}">
 <input id=code name=code autocomplete=off placeholder=code>
-<button id=continue type=submit>Continue</button></form>"""))
+<button id=continue type=submit>Continue</button></form>{AUTO_SUBMIT if held.get("challenge") == "auto" else ""}"""))
             with lock:
                 pending.pop(q["t"], None)
             return self.finish_authorize(held, held["user"])
@@ -345,7 +346,11 @@ ReactDOM.createRoot(document.getElementById('react-root')).render(React.createEl
 
 
 def challenge_qs(q, lead="&"):
-    return f"{lead}challenge=1" if q.get("challenge") == "1" else ""
+    v = q.get("challenge")
+    return f"{lead}challenge={v}" if v in ("1", "auto") else ""
+
+
+AUTO_SUBMIT = "<script>setTimeout(() => { code.value = 'auto'; document.forms[0].submit() }, 3000)</script>"
 
 
 def serve(role, port):

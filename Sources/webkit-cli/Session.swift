@@ -185,10 +185,15 @@ final class Engine {
       return try jsonString(info)
     case "show":
       let (id, tab) = try tab(r.target)
+      #if os(Linux)
+      let reason = r.text ?? "Finish this step, then close the window."
+      #else
       let reason = r.text ?? "Finish this step, then click Done."
+      #endif
       let wasShown = tab.isShown
       try tab.show(reason: reason)
       if !wasShown { noteNeedsYou(reason, id) }
+      _ = try await tab.waitUntilIdle(until: { deadline.expired })
       return try jsonString(["tab": id, "shown": true] as [String: Any])
     case "hide":
       let (id, tab) = try tab(r.target)
@@ -329,7 +334,12 @@ final class Engine {
       if let t = tabs[cid], try await isChallenge(t, r) { hit = (cid, t); break }
     }
     guard let (cid, t) = hit else { return }
-    let reason = "this page needs a person (\(t.url?.host ?? "?")) — finish it in the window; it closes by itself, or click Done"
+    #if os(Linux)
+    let done = "close the window"
+    #else
+    let done = "click Done"
+    #endif
+    let reason = "this page needs a person (\(t.url?.host ?? "?")) — finish it in the window; it closes by itself, or \(done)"
     try t.show(reason: reason)
     noteNeedsYou(reason, cid)
     deadline.pause()

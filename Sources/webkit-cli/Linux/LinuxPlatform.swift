@@ -72,9 +72,31 @@ private let cookieAdded: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer
 @MainActor
 func ephemeralStore() -> WebStore { WebStore(dataDirectory: nil, cacheDirectory: nil) }
 
+/// Same flow as macOS: a window on the profile; sign in; closing it (or Ctrl-C here) saves.
 @MainActor
 func auth(_ account: String, _ url: URL) async throws {
-  throw CLIError("`auth` needs a window, and webkit-cli on Linux is headless-only for now — sign in on macOS (see docs/linux-port.md)")
+  try requireGUI()
+  // a running session holds the profile's session cookies in memory and would overwrite what we save
+  if try SessionClient.stopIfRunning(account: account) {
+    printErr("webkit-cli: stopped the running session for '\(account)' so the sign-in is saved cleanly")
+  }
+  let profile = try await Profile.open(account, create: true)
+  let window = try Browser(store: profile.store, visible: true, title: "webkit-cli · \(account) — sign in, then close this window")
+  window.startLoad(url)
+  printErr("webkit-cli: signing in as '\(account)' — close the window when you're finished (or Ctrl-C here).")
+  let signals = [SIGINT, SIGTERM, SIGHUP].map { sig -> DispatchSourceSignal in
+    signal(sig, SIG_IGN)
+    let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+    src.setEventHandler { MainActor.assumeIsolated { window.close() } }
+    src.resume()
+    return src
+  }
+  await window.waitUntilClosed()
+  signals.forEach { $0.cancel() }
+  let host = window.url?.host ?? "?"
+  window.close()
+  try await profile.close()
+  print(try jsonString(["account": account, "saved": true, "lastHost": host] as [String: Any]))
 }
 
 @MainActor

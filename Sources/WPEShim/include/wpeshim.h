@@ -15,6 +15,7 @@ typedef struct {
   void (*closed)(void *ctx);                                       // the page called window.close()
   void (*crashed)(void *ctx);                                      // web process terminated
   void (*popup)(void *ctx, wk_tab *popup);                         // window.open: adopt `popup` (wk_tab_set_ctx)
+  void (*window_closed)(void *ctx);                                // a visible window's close button
 } wk_callbacks;
 
 typedef void (*wk_js_done)(void *req, const char *json, int undefined, const char *error);
@@ -24,6 +25,14 @@ typedef void (*wk_done)(void *req, const char *error);
 
 /// Connects the headless display once; returns an error message or NULL.
 const char *wk_init(void);
+/// Connects the Wayland display for visible windows (auth/show); returns an error message or NULL.
+/// Needs $WAYLAND_DISPLAY (WPE has no X11 platform).
+const char *wk_init_gui(void);
+int wk_gui_available(void);
+/// A visible window on the Wayland display, sharing `session` with the headless tabs.
+wk_tab *wk_tab_new_visible(wk_session *session, const char *user_agent, const char *title, int width, int height);
+void wk_tab_set_title(wk_tab *tab, const char *title);
+
 /// data_dir/cache_dir NULL → ephemeral (in memory).
 wk_session *wk_session_new(const char *data_dir, const char *cache_dir);
 

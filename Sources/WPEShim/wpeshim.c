@@ -4,6 +4,7 @@
 #include "wpeshim.h"
 #include <wpe/webkit.h>
 #include <wpe/headless/wpe-headless.h>
+#include <wpe/wayland/wpe-wayland.h>
 #include <cairo.h>
 #include <string.h>
 #include <glib-unix.h>
@@ -17,6 +18,7 @@ struct wk_tab {
 };
 
 static WPEDisplay *display;
+static WPEDisplay *gui;
 
 const char *wk_init(void) {
   if (display) return NULL;
@@ -30,6 +32,24 @@ const char *wk_init(void) {
   }
   return NULL;
 }
+
+const char *wk_init_gui(void) {
+  if (gui) return NULL;
+  if (!g_getenv("WAYLAND_DISPLAY")) return "no Wayland session ($WAYLAND_DISPLAY is not set)";
+  WPEDisplay *d = wpe_display_wayland_new();
+  GError *error = NULL;
+  if (!wpe_display_connect(d, &error)) {
+    static char msg[512];
+    snprintf(msg, sizeof msg, "cannot connect to the Wayland display: %s", error ? error->message : "?");
+    if (error) g_error_free(error);
+    g_object_unref(d);
+    return msg;
+  }
+  gui = d;
+  return NULL;
+}
+
+int wk_gui_available(void) { return gui != NULL; }
 
 wk_session *wk_session_new(const char *data_dir, const char *cache_dir) {
   wk_session *s = g_new0(wk_session, 1);
@@ -78,12 +98,15 @@ static gboolean on_decide_policy(WebKitWebView *v, WebKitPolicyDecision *d, WebK
 }
 
 static void on_close(WebKitWebView *v, wk_tab *t) { if (t->cb.closed) t->cb.closed(t->ctx); }
+static void on_window_closed(WPEView *v, wk_tab *t) { if (t->cb.window_closed) t->cb.window_closed(t->ctx); }
 static void on_crash(WebKitWebView *v, WebKitWebProcessTerminationReason r, wk_tab *t) { if (t->cb.crashed) t->cb.crashed(t->ctx); }
 
 static wk_tab *wrap(WebKitWebView *view, int width, int height);
 
 static WebKitWebView *on_create(WebKitWebView *v, WebKitNavigationAction *a, wk_tab *t) {
-  WebKitWebView *popup = WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW, "related-view", v, "display", display, NULL));
+  // a popup opens where its opener is: hidden next to a headless tab, as a window next to a visible one
+  WPEDisplay *where = webkit_web_view_get_display(v) ? webkit_web_view_get_display(v) : display;
+  WebKitWebView *popup = WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW, "related-view", v, "display", where, NULL));
   webkit_settings_set_user_agent(webkit_web_view_get_settings(popup), webkit_settings_get_user_agent(webkit_web_view_get_settings(v)));
   wk_tab *child = wrap(popup, 1280, 800);
   if (t->cb.popup) t->cb.popup(t->ctx, child);
@@ -107,6 +130,7 @@ static wk_tab *wrap(WebKitWebView *view, int width, int height) {
   g_signal_connect(view, "close", G_CALLBACK(on_close), t);
   g_signal_connect(view, "web-process-terminated", G_CALLBACK(on_crash), t);
   g_signal_connect(view, "create", G_CALLBACK(on_create), t);
+  if (wpe) g_signal_connect(wpe, "closed", G_CALLBACK(on_window_closed), t);
   return t;
 }
 
@@ -118,6 +142,23 @@ wk_tab *wk_tab_new(wk_session *s, const char *user_agent, int width, int height)
   return wrap(view, width, height);
 }
 
+wk_tab *wk_tab_new_visible(wk_session *s, const char *user_agent, const char *title, int width, int height) {
+  if (!gui) return NULL;
+  WebKitWebView *view = WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW, "display", gui, "network-session", s->session, NULL));
+  WebKitSettings *settings = webkit_web_view_get_settings(view);
+  webkit_settings_set_javascript_can_open_windows_automatically(settings, TRUE);
+  if (user_agent) webkit_settings_set_user_agent(settings, user_agent);
+  wk_tab *t = wrap(view, width, height);
+  wk_tab_set_title(t, title);
+  return t;
+}
+
+void wk_tab_set_title(wk_tab *t, const char *title) {
+  WPEView *wpe = webkit_web_view_get_wpe_view(t->view);
+  WPEToplevel *top = wpe ? wpe_view_get_toplevel(wpe) : NULL;
+  if (top && title) wpe_toplevel_set_title(top, title);
+}
+
 void wk_tab_set_ctx(wk_tab *t, void *ctx, const wk_callbacks *cb) { t->ctx = ctx; t->cb = *cb; }
 void wk_tab_load(wk_tab *t, const char *uri) { webkit_web_view_load_uri(t->view, uri); }
 void wk_tab_load_html(wk_tab *t, const char *html, const char *base) { webkit_web_view_load_html(t->view, html, base); }
@@ -125,6 +166,8 @@ void wk_tab_stop(wk_tab *t) { webkit_web_view_stop_loading(t->view); }
 
 void wk_tab_close(wk_tab *t) {
   g_signal_handlers_disconnect_by_data(t->view, t);
+  WPEView *wpe = webkit_web_view_get_wpe_view(t->view);
+  if (wpe) g_signal_handlers_disconnect_by_data(wpe, t);
   memset(&t->cb, 0, sizeof t->cb);
   webkit_web_view_try_close(t->view);
   g_object_unref(t->view);
