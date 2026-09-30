@@ -1,6 +1,6 @@
 # webkit-cli on Linux: proposal (beads-cdfg, phase 1)
 
-Goal: the same CLI, session daemon and `snapshot`/`click`/`type`/`eval`/`shot` semantics as on macOS, still in Swift, on a Linux WebKit, tested in an e2b sandbox. The mac backend stays untouched.
+Goal: the same CLI, session daemon and `snapshot`/`click`/`type`/`eval`/`shot` semantics as on macOS, still in Swift, on a Linux WebKit, tested in a Linux sandbox (Daytona, per aleks; e2b was the first idea). The mac backend stays untouched.
 
 Tags on claims: **[RAN]** means run in docker on this Mac (arm64), **[SRC]** means read from WebKit source or Debian packages, **[UNC]** means not verified yet.
 
@@ -27,8 +27,7 @@ Tags on claims: **[RAN]** means run in docker on this Mac (arm64), **[SRC]** mea
   - A probe using a SwiftPM `systemLibrary` target (`pkgConfig: "wpe-webkit-2.0 wpe-platform-headless-2.0"`) builds in 5 s.
   - At runtime it creates a headless display and a network session with no GPU or display server.
 - **Runtime size:** `libwpewebkit-2.0-1` plus deps add about **590 MB** to a `debian:sid` base, plus the Swift runtime libs (`swift:6.4-trixie-slim` is 118 MB).
-- **e2b:** use a custom template built from a Dockerfile (Swift + WPE baked in). Installing at sandbox start would take minutes.
-  - `e2b` CLI here is logged in to aleks's account, so phase 2 needs no new key. Sandboxes cost money, so I'm asking for a go-ahead.
+- **Sandbox: Daytona** (aleks provided a key; `~/.config/daytona/env`, never copied anywhere). Use a snapshot/image built from a Dockerfile (Swift + WPE baked in), since installing at sandbox start would take minutes. I'll delete every sandbox I create.
 
 ## What ports
 
@@ -66,16 +65,16 @@ The Linux backend in Swift over the C API:
 1. **Main loop:** WebKit needs a GLib main loop, while our daemon/async code uses Swift's `MainActor` (Dispatch main queue). On Linux they don't share a loop **[UNC]**. Plan: run `g_main_loop_run` on the main thread and drain Swift's main queue from a GLib source (or pump GLib from a dispatch timer as a fallback). **The spike settles this first.**
 2. **Swift ↔ GLib ergonomics:** `g_signal_connect` and `G_CALLBACK` are macros, `GAsyncReadyCallback` can't capture, and the `g_variant_new`/`g_object_new` varargs don't import. Handled with `g_signal_connect_data` + `@convention(c)` trampolines + `Unmanaged` boxes, and a few C helpers in the module's shim header. It's tedious, not blocking; SwiftGtk-style projects do the same.
 3. **Distro:** WPE 2.54 only on Debian sid/forky today. Trixie backports or Ubuntu would mean the WebKitGTK + weston-headless backend (same API, plus a display).
-4. **Signing in on a server:** `auth` needs a person and a screen. For e2b, the realistic path is to sign in on the Mac, then `webkit-cli export-profile` → an encrypted/0600 cookie bundle → `import-profile` in the sandbox. Cookies are credentials, so this needs aleks's OK. `auth` on a Linux desktop via WPE's Wayland platform comes later.
-5. **Not ported initially:** `show`/`--escalate` (no screen in e2b) → clear "no GUI session" errors. Passkeys (not available in WPE either).
+4. **Signing in on a server:** `auth` needs a person and a screen. For a sandbox, the realistic path is to sign in on the Mac, then `webkit-cli export-profile` → an encrypted/0600 cookie bundle → `import-profile` in the sandbox. Cookies are credentials, so this needs aleks's OK. `auth` on a Linux desktop via WPE's Wayland platform comes later.
+5. **Not ported initially:** `show`/`--escalate` (no screen in a sandbox) → clear "no GUI session" errors. Passkeys (not available in WPE either).
 
 ## Rejected: WebDriver (WPEWebDriver / cog) instead of our daemon
 
-It's packaged and gives screenshots and async scripts for free. But it needs one browser process per session, and profile directories only through launcher flags. Its cookie API is scoped to the current domain, so it can't dump every session-only cookie, which e2b-style logins need. And it would be a second architecture next to the mac one. Our daemon keeps the CLI identical on both OSes.
+It's packaged and gives screenshots and async scripts for free. But it needs one browser process per session, and profile directories only through launcher flags. Its cookie API is scoped to the current domain, so it can't dump every session-only cookie, which sandbox logins need. And it would be a second architecture next to the mac one. Our daemon keeps the CLI identical on both OSes.
 
-## Phase 2: the spike (≈ 1 day, in e2b)
+## Phase 2: the spike (≈ 1 day, in a Daytona sandbox)
 
-1. An e2b template from a Dockerfile: `swift:6.4-trixie` + sid `libwpewebkit-2.0-dev` + cairo.
+1. A Daytona image from a Dockerfile: `swift:6.4-trixie` + sid `libwpewebkit-2.0-dev` + cairo.
 2. On branch `linux`: the `Tab` protocol refactor (mac stays green: `check.sh`), then `WPETab` + a GLib main loop.
 3. **Done when**, headless in the sandbox:
    - `webkit-cli open https://example.com` → tab id
