@@ -23,9 +23,13 @@ These runs were on battery with Low Power Mode on, which caps display refresh at
 ### macOS (14+)
 
 ```sh
-mint install caffeinum/webkit-cli        # brew install mint; puts ~/.mint/bin/webkit-cli on your PATH
+brew install mint                                  # once, if you don't have Mint yet
+mint install caffeinum/webkit-cli
+export PATH="$HOME/.mint/bin:$PATH"                # add to ~/.zshrc so webkit-cli is found
 webkit-cli doctor
 ```
+
+[Mint](https://github.com/yonaskolb/Mint) builds Swift command-line tools from their GitHub releases. Without Homebrew, see its README for other ways to install it.
 
 Or from a clone (needs Xcode or the Command Line Tools):
 
