@@ -20,16 +20,39 @@ These runs were on battery with Low Power Mode on, which caps display refresh at
 
 ## Install
 
-Needs macOS 14+ and Xcode or the Command Line Tools.
+### macOS (14+)
+
+```sh
+mint install caffeinum/webkit-cli        # brew install mint; puts ~/.mint/bin/webkit-cli on your PATH
+webkit-cli doctor
+```
+
+Or from a clone (needs Xcode or the Command Line Tools):
 
 ```sh
 git clone https://github.com/caffeinum/webkit-cli && cd webkit-cli
 swift build -c release
 cp .build/release/webkit-cli /usr/local/bin/    # keep the name "webkit-cli", see below
-./scripts/check.sh                              # regression check: doctor + open/text/eval/shot on example.com
+./scripts/check.sh                              # doctor + one-shot snapshot/eval/shot on example.com
 ```
 
-**Keep the binary named `webkit-cli`.** WebKit files persistent data under `~/Library/WebKit/<executable-name>/WebsiteDataStore/<uuid>`, so a renamed copy would quietly see none of your accounts. The binary checks its own name and refuses to run under any other.
+**Keep the binary named `webkit-cli`.** WebKit files persistent data under `~/Library/WebKit/<executable-name>/WebsiteDataStore/<uuid>`, so a renamed copy would quietly see none of your accounts. The binary checks its own name and refuses to run under any other. Mint keeps the name.
+
+### Linux (headless)
+
+The Linux backend runs WPE WebKit 2.54+ on its headless display: no X, no Wayland, no GPU. That WPE version is packaged in Debian sid/forky. `linux/Dockerfile` is a ready build image (Swift 6.4 on Debian trixie plus sid's `libwpewebkit-2.0-dev`):
+
+```sh
+docker build -t webkit-cli-linux linux/
+docker run --rm -it -v "$PWD":/src -w /src webkit-cli-linux swift build -c release
+```
+
+On Linux:
+- The same commands, session daemon, `snapshot` refs and exit codes as on macOS. Profiles live in `~/.local/share/webkit-cli/profiles/<uuid>` (not keyed by the binary name).
+- It's **headless only**. `auth`, `show` and `--escalate` need a window, so they fail with a clear message (exit 1). To use a signed-in profile on Linux today, sign in on macOS. Moving cookies across is planned, not built.
+- **WebKit's own sandbox** (bubblewrap) needs unprivileged user namespaces and a `/proc` mount. Most containers block that (docker's default, Daytona). webkit-cli checks at startup and stops with the fix: run with `--privileged`, or set `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1` so the container is the isolation instead. It never turns the sandbox off by itself.
+
+Tested on Daytona with `scripts/test-linux-daytona.sh`: it creates a sandbox, uploads HEAD, builds, runs the session suite and the browser-use rehearsal against a local fixture, then deletes the sandbox. `scripts/check-session.sh` runs the same suite on either OS.
 
 ## Commands
 
