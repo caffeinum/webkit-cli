@@ -15,7 +15,7 @@ command -v daytona >/dev/null || { echo "daytona CLI not found" >&2; exit 1; }
 
 d() { daytona "$@" 2>&1 | grep -v 'Version mismatch'; }
 run() { # run a shell command in the sandbox; its output streams back, its exit code is ours
-  d exec "$SB" --timeout "${2:-900}" -- "$1; echo __rc=\$?" | tee "$tmp/out" | grep -v '^__rc='
+  d exec "$SB" --timeout "${2:-900}" -- "$1; echo __rc=\$?" | tee "$tmp/out" | { grep -v '^__rc=' || true; }
   rc=$(grep -o '^__rc=[0-9]*' "$tmp/out" | tail -1 | cut -d= -f2)
   [ "${rc:-1}" = 0 ]
 }
@@ -62,7 +62,7 @@ echo "suite: browser-use rehearsal (redirect + popup)"
 run "cd /root/webkit-cli && python3 scripts/fixtures/oauth_server.py >/tmp/fixture.log 2>&1 & sleep 1; \
   cd /root/webkit-cli/scripts && export $NOSANDBOX WEBKIT_CLI=/root/webkit-cli/.build/release/webkit-cli; \
   python3 -c \"import json,uuid,os; p=os.path.expanduser('~/.config/webkit-cli/accounts.json'); d=json.load(open(p)) if os.path.exists(p) else {}; d['rehearse']=str(uuid.uuid4()).upper(); json.dump(d,open(p,'w'))\" && \
-  sh rehearse-browser-use.sh rehearse /tmp/k1 && $WEBKIT_CLI forget rehearse >/dev/null && \
+  sh rehearse-browser-use.sh rehearse /tmp/k1 && \$WEBKIT_CLI forget rehearse >/dev/null && \
   python3 -c \"import json,uuid,os; p=os.path.expanduser('~/.config/webkit-cli/accounts.json'); d=json.load(open(p)); d['rehearse']=str(uuid.uuid4()).upper(); json.dump(d,open(p,'w'))\" && \
   SIGNIN_URL=http://127.0.0.1:8765/signin-popup GOOGLE_BUTTON='text=Sign in' sh rehearse-browser-use.sh rehearse /tmp/k2 && \
   stat -c %a /tmp/k1 /tmp/k2"
