@@ -5,6 +5,8 @@ func runWithoutApp(_ command: Command) throws -> Bool {
   switch command {
   case .help:
     print(helpText)
+  case .version:
+    print("webkit-cli \(webkitCLIVersion)")
   case .accounts:
     let accounts = try Accounts.load()
     let rows = accounts.byName.keys.sorted().map { ["name": $0, "id": accounts.byName[$0]!.uuidString] }
@@ -44,7 +46,7 @@ func emit(_ result: String, _ opts: Options) throws {
 @MainActor
 func run(_ command: Command, _ opts: Options) async throws {
   switch command {
-  case .help, .accounts, .stop:
+  case .help, .version, .accounts, .stop:
     preconditionFailure("handled by runWithoutApp")
   case .session(_, let request):
     // throwaway profile: no session process, tabs die with this command

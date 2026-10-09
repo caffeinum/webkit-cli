@@ -1,5 +1,8 @@
 import Foundation
 
+/// Bumped with each release tag (vX.Y.Z).
+let webkitCLIVersion = "0.2.1"
+
 let helpText = """
   webkit-cli — drive the system WebKit headless, with persistent logged-in profiles.
 
@@ -75,6 +78,7 @@ let helpText = """
                             and print only {"written","bytes"} — for API keys and other secrets
     --raw                   `eval`: when the result is a string, output it without JSON quotes
     -h, --help              this text
+    --version               print the version
 
   EXAMPLES
     webkit-cli auth google.com                   # sign in to Google in a window, click Done
@@ -97,6 +101,7 @@ let helpText = """
   """
 
 enum Command {
+  case version
   var isAuth: Bool {
     if case .auth = self { return true }
     return false
@@ -153,6 +158,7 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
     let a = args[i]
     switch a {
     case "-h", "--help": return (.help, opts)
+    case "--version": return (.version, opts)
     case "--raw", "--until-hidden", "--escalate", "--json", "--redact":
       switch a {
       case "--raw": opts.raw = true
@@ -233,6 +239,8 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
   switch verb {
   case "help":
     return (.help, opts)
+  case "version":
+    return (.version, opts)
   case "accounts":
     try need(0, "accounts")
     return (.accounts, opts)
