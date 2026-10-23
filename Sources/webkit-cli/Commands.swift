@@ -86,6 +86,9 @@ func run(_ command: Command, _ opts: Options) async throws {
     _ = try SessionClient.stopIfRunning(account: account)
     try await removeDataStore(id)
     try? FileManager.default.removeItem(at: Accounts.sessionFile(for: id))
+    #if os(macOS)
+    try? FileManager.default.removeItem(at: WebCryptoKey.file(for: id))
+    #endif
     for leftover in [SessionPaths.lock(account), SessionPaths.log(account), SessionPaths.socket(account)] {
       try? FileManager.default.removeItem(atPath: leftover)
     }

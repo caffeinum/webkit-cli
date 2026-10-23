@@ -177,6 +177,24 @@ window.addEventListener('message', async e => {{
             return self.send(200, page("Late", f"""<h1>late element in {ms}ms</h1>
 <script>setTimeout(() => {{ const d = document.createElement('div'); d.id = 'late'; d.textContent = 'late arrived'; document.body.append(d) }}, {ms})</script>"""))
 
+        # a CryptoKey stored in IndexedDB: WebKit wraps it with the profile's master key
+        if path == "/webcrypto":
+            return self.send(200, page("WebCrypto", """<h1 id=wc>storing</h1><script>
+crypto.subtle.generateKey({name: 'AES-GCM', length: 128}, false, ['encrypt']).then(key => {
+  const open = indexedDB.open('wc', 1);
+  open.onupgradeneeded = () => open.result.createObjectStore('k');
+  open.onsuccess = () => {
+    const tx = open.result.transaction('k', 'readwrite');
+    tx.objectStore('k').put(key, 'key');
+    tx.oncomplete = () => { document.getElementById('wc').textContent = 'stored'; };
+    tx.onerror = () => { document.getElementById('wc').textContent = 'failed: ' + tx.error; };
+  };
+});
+</script>"""))
+        # parsed at once, but the load event waits ?s seconds for an image
+        if path == "/slow-image":
+            return self.send(200, page("Slow image", f'<h1 id=parsed>parsed</h1><img src="/slow?s={q.get("s", 3)}">'))
+
         if path == "/jsredirect":
             return self.send(200, page("Redirecting", "<h1>redirecting in 2s</h1><script>setTimeout(() => location = '/landed', 2000)</script>"))
         if path == "/landed":

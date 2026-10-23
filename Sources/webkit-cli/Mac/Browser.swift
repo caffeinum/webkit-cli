@@ -209,6 +209,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     lastStatus = nil
     lastFailure = nil
     requestedURL = url.absoluteString
+    committed = false
     try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
       finishLoad(.failure(CLIError("load of \(requestedURL ?? "?") was superseded by another load")))
       pendingLoad = c
@@ -240,6 +241,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
 
   func webView(_ w: WKWebView, didStartProvisionalNavigation _: WKNavigation!) {
     lastFailure = nil
+    committed = false
   }
 
   func webView(_ w: WKWebView, didFinish _: WKNavigation!) {
@@ -329,6 +331,9 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
 
   /// Scripts in flight. A cross-document navigation destroys their context and WebKit may never call
   /// back, so a commit fails them all at once instead of letting them hang until --timeout.
+  /// False from the start of a navigation until its document replaces the old one.
+  private(set) var committed = true
+
   private var runningJS: [UUID: CheckedContinuation<Any?, Error>] = [:]
 
   func callJS(_ body: String, _ args: [String: Any] = [:]) async throws -> Any? {
@@ -367,6 +372,7 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
   }
 
   func webView(_ w: WKWebView, didCommit _: WKNavigation!) {
+    committed = true
     failRunningJS(Browser.navigatedAway)
   }
 

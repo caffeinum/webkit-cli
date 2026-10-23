@@ -12,7 +12,7 @@ final class WebDriverServer {
   private let account: String
   private let idle: Double
   private let timeout: Double
-  private var sessions: Set<String> = []
+  private var sessions: [String: WDSession] = [:]
   private let lock = NSLock()
   private var signalSources: [DispatchSourceSignal] = []
 
@@ -49,7 +49,7 @@ final class WebDriverServer {
 
   private func shutdown() -> Never {
     lock.lock()
-    let open = sessions
+    let open = sessions.keys
     lock.unlock()
     for id in open { _ = try? send(Request(cmd: "close", target: id, timeout: 10)) }
     exit(0)
@@ -116,25 +116,33 @@ final class WebDriverServer {
     case ("GET", 1, "status"):
       return (200, ["ready": true, "message": "webkit-cli \(webkitCLIVersion), profile \(account)"])
     case ("POST", 1, "session"):
-      return (200, try newSession())
+      return (200, try newSession(body))
     default: break
     }
     guard p.count >= 2, p[0] == "session" else { throw WDError(404, "unknown command", "\(method) /\(p.joined(separator: "/"))") }
     let sid = p[1]
     lock.lock()
-    let known = sessions.contains(sid)
+    let known = sessions[sid]
     lock.unlock()
-    guard known else { throw WDError(404, "invalid session id", "no session \(sid)") }
+    guard let ws = known else { throw WDError(404, "invalid session id", "no session \(sid)") }
+    let strategy = ws.strategy == "normal" ? nil : ws.strategy
     let rest = Array(p.dropFirst(2))
     switch (method, rest.first, rest.count) {
     case ("DELETE", nil, 0):
-      lock.lock(); sessions.remove(sid); lock.unlock()
+      lock.lock(); sessions.removeValue(forKey: sid); lock.unlock()
       _ = try? send(Request(cmd: "close", target: sid, timeout: timeout))
+      return (200, NSNull())
+    case ("GET", "timeouts", 1):
+      return (200, ws.timeoutsJSON)
+    case ("POST", "timeouts", 1):
+      var updated = ws
+      try updated.setTimeouts(body)
+      lock.lock(); sessions[sid] = updated; lock.unlock()
       return (200, NSNull())
     case ("POST", "url", 1):
       guard let url = body["url"] as? String else { throw WDError(400, "invalid argument", "url needs {url}") }
       guard let parsed = URL(string: url), parsed.scheme != nil else { throw WDError(400, "invalid argument", "not an absolute URL: \(url)") }
-      _ = try call(Request(cmd: "goto", target: sid, url: parsed.absoluteString, timeout: timeout))
+      _ = try call(Request(cmd: "goto", target: sid, url: parsed.absoluteString, timeout: ws.pageLoad, strategy: strategy))
       return (200, NSNull())
     case ("GET", "url", 1):
       return (200, try script(sid, "return location.href"))
@@ -144,24 +152,30 @@ final class WebDriverServer {
       return (200, try script(sid, "return document.documentElement ? document.documentElement.outerHTML : ''"))
     case ("POST", "back", 1), ("POST", "forward", 1), ("POST", "refresh", 1):
       let nav = ["back": "back", "forward": "forward", "refresh": "reload"][rest[0]]!
-      _ = try call(Request(cmd: "nav", target: sid, text: nav, timeout: timeout))
+      _ = try call(Request(cmd: "nav", target: sid, text: nav, timeout: ws.pageLoad, strategy: strategy))
       return (200, NSNull())
     case ("POST", "execute", 2) where rest[1] == "sync" || rest[1] == "async":
       guard let js = body["script"] as? String else { throw WDError(400, "invalid argument", "execute needs {script, args}") }
       let args = body["args"] as? [Any] ?? []
-      return (200, try execute(sid, js, args, async: rest[1] == "async"))
+      return (200, try execute(sid, js, args, async: rest[1] == "async", timeout: ws.script ?? 365 * 86400)) // null = no limit
     case ("POST", "element", 1), ("POST", "elements", 1):
       guard let using = body["using"] as? String, let value = body["value"] as? String else {
         throw WDError(400, "invalid argument", "find needs {using, value}")
       }
-      let found = try execute(sid, findElementsJS, [using, value, rest[0] == "element"], async: false)
+      // implicit wait: keep looking until something matches or it runs out
+      let until = Date().addingTimeInterval(ws.implicit)
+      var found = try execute(sid, findElementsJS, [using, value, rest[0] == "element"], async: false)
+      while (found as? [Any])?.isEmpty ?? false, Date() < until {
+        usleep(100_000)
+        found = try execute(sid, findElementsJS, [using, value, rest[0] == "element"], async: false)
+      }
       if rest[0] == "elements" { return (200, found) }
       guard let list = found as? [Any], let first = list.first else {
         throw WDError(404, "no such element", "no element matches \(using) \(value)")
       }
       return (200, first)
     case ("POST", "element", 3) where rest[2] == "click":
-      _ = try call(Request(cmd: "click", target: sid, selector: try elementSelector(sid, rest[1]), timeout: timeout))
+      _ = try call(Request(cmd: "click", target: sid, selector: try elementSelector(sid, rest[1]), timeout: ws.pageLoad, strategy: strategy))
       return (200, NSNull())
     case ("POST", "element", 3) where rest[2] == "clear":
       _ = try call(Request(cmd: "type", target: sid, selector: try elementSelector(sid, rest[1]), text: "", timeout: timeout))
@@ -211,12 +225,26 @@ final class WebDriverServer {
     }
   }
 
-  private func newSession() throws -> [String: Any] {
+  private func newSession(_ body: [String: Any]) throws -> [String: Any] {
+    let caps = body["capabilities"] as? [String: Any] ?? [:]
+    var asked = caps["alwaysMatch"] as? [String: Any] ?? [:]
+    if let first = (caps["firstMatch"] as? [[String: Any]])?.first { asked.merge(first) { a, _ in a } }
+    var ws = WDSession(pageLoad: timeout)
+    if let s = asked["pageLoadStrategy"] {
+      guard let s = s as? String, ["normal", "eager", "none"].contains(s) else {
+        throw WDError(400, "invalid argument", "pageLoadStrategy must be normal, eager or none")
+      }
+      ws.strategy = s
+    }
+    if let t = asked["timeouts"] {
+      guard let t = t as? [String: Any] else { throw WDError(400, "invalid argument", "timeouts must be an object") }
+      try ws.setTimeouts(t)
+    }
     let out = try call(Request(cmd: "open", url: "about:blank", timeout: timeout))
     guard let info = out as? [String: Any], let tab = info["tab"] as? String else {
       throw WDError(500, "session not created", "the session process returned no tab")
     }
-    lock.lock(); sessions.insert(tab); lock.unlock()
+    lock.lock(); sessions[tab] = ws; lock.unlock()
     #if os(macOS)
     let platform = "mac"
     #else
@@ -224,7 +252,7 @@ final class WebDriverServer {
     #endif
     return ["sessionId": tab, "capabilities": [
       "browserName": "webkit-cli", "browserVersion": webkitCLIVersion, "platformName": platform,
-      "acceptInsecureCerts": false, "pageLoadStrategy": "normal", "webkit-cli:account": account,
+      "acceptInsecureCerts": false, "pageLoadStrategy": ws.strategy, "timeouts": ws.timeoutsJSON, "webkit-cli:account": account,
     ] as [String: Any]]
   }
 
@@ -273,16 +301,18 @@ final class WebDriverServer {
   }
 
   /// Runs a WebDriver script (a function body, args as `arguments`); elements cross as {element-…: id}.
-  private func execute(_ sid: String, _ js: String, _ args: [Any], async: Bool) throws -> Any {
+  private func execute(_ sid: String, _ js: String, _ args: [Any], async: Bool, timeout script: Double? = nil) throws -> Any {
     let argsJSON = String(decoding: try JSONSerialization.data(withJSONObject: args, options: [.fragmentsAllowed]), as: UTF8.self)
     let body = async
       ? "return await new Promise((resolve, reject) => { (function() { \(js) }).apply(null, [...un(\(argsJSON)), resolve]); })"
       : "return await (async function() { \(js) }).apply(null, un(\(argsJSON)))"
     let wrapped = executeJS.replacingOccurrences(of: "/*BODY*/", with: "return ser(await (async () => { \(body) })());")
     do {
-      return try call(Request(cmd: "eval", target: sid, js: wrapped, timeout: timeout))
+      return try call(Request(cmd: "eval", target: sid, js: wrapped, timeout: script ?? timeout))
     } catch let e as WDError where e.message.contains("WKCLI-STALE") {
       throw WDError(404, "stale element reference", "the element is no longer on the page (it changed or navigated)")
+    } catch let e as WDError where e.code == "timeout" && script != nil {
+      throw WDError(500, "script timeout", e.message)
     }
   }
 
@@ -309,6 +339,31 @@ final class WebDriverServer {
     }
     guard let out = resp.output, let data = out.data(using: .utf8) else { return NSNull() }
     return (try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)) ?? out
+  }
+}
+
+/// A WebDriver session's settings; timeouts in seconds (W3C speaks milliseconds).
+struct WDSession {
+  var strategy = "normal"
+  var pageLoad: Double
+  var script: Double? = 30
+  var implicit: Double = 0
+
+  var timeoutsJSON: [String: Any] {
+    ["pageLoad": Int(pageLoad * 1000), "script": script.map { Int($0 * 1000) } ?? NSNull(), "implicit": Int(implicit * 1000)]
+  }
+
+  mutating func setTimeouts(_ t: [String: Any]) throws {
+    func ms(_ key: String) throws -> Double? {
+      guard let v = t[key], !(v is NSNull) else { return nil }
+      guard let n = v as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue >= 0, n.doubleValue.rounded() == n.doubleValue else {
+        throw WDError(400, "invalid argument", "timeouts.\(key) must be a whole number of milliseconds ≥ 0")
+      }
+      return n.doubleValue / 1000
+    }
+    if let v = try ms("pageLoad") { pageLoad = v }
+    if let v = try ms("implicit") { implicit = v }
+    if t.keys.contains("script") { script = try ms("script") }
   }
 }
 

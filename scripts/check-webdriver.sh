@@ -111,6 +111,42 @@ check(req("GET", f"{S}/frobnicate", expect=404)["error"] == "unknown command", "
 req("DELETE", S)
 check(req("GET", f"{S}/url", expect=404)["error"] == "invalid session id", "session gone after delete"); ok("delete session")
 
+import time
+def timed(f):
+    t = time.monotonic(); f(); return time.monotonic() - t
+# pageLoadStrategy: normal waits for the load event, eager for DOMContentLoaded, none for nothing
+slow = f"{APP}/slow-image?s=3"
+for strategy, lo, hi in (("normal", 3, 10), ("eager", 0, 1.5), ("none", 0, 0.5)):
+    s2 = req("POST", "/session", {"capabilities": {"alwaysMatch": {"pageLoadStrategy": strategy}}})
+    check(s2["capabilities"]["pageLoadStrategy"] == strategy, f"{strategy} in capabilities")
+    S2 = f"/session/{s2['sessionId']}"
+    dt = timed(lambda: req("POST", f"{S2}/url", {"url": slow}))
+    check(lo <= dt <= hi, f"{strategy}: navigate took {dt:.2f}s, wanted {lo}-{hi}s")
+    if strategy == "eager":
+        check(req("POST", f"{S2}/execute/sync", {"script": "return document.getElementById('parsed') !== null", "args": []}), "eager: document parsed")
+        req("POST", f"{S2}/url", {"url": f"{APP}/slow-link"})
+        go = req("POST", f"{S2}/element", {"using": "css selector", "value": "#go"})[E]
+        req("POST", f"{S2}/execute/sync", {"script": "arguments[0].href = '/slow-image?s=3'; return null", "args": [{E: go}]})
+        dt = timed(lambda: req("POST", f"{S2}/element/{go}/click", {}))
+        check(dt <= 1.5 and req("GET", f"{S2}/url").endswith("/slow-image?s=3"), f"eager: click to a slow page took {dt:.2f}s")
+    req("DELETE", S2)
+    ok(f"pageLoadStrategy {strategy}: navigate {dt:.2f}s")
+
+# timeouts: pageLoad bounds navigation, script bounds execute, implicit waits for elements
+s2 = req("POST", "/session", {"capabilities": {"alwaysMatch": {"timeouts": {"pageLoad": 1000}}}})
+S2 = f"/session/{s2['sessionId']}"
+check(req("GET", f"{S2}/timeouts") == {"pageLoad": 1000, "script": 30000, "implicit": 0}, "timeouts from capabilities")
+check(req("POST", f"{S2}/url", {"url": f"{APP}/slow?s=3"}, expect=500)["error"] == "timeout", "pageLoad timeout")
+req("POST", f"{S2}/url", {"url": f"{APP}/late?s=1"})
+check(req("POST", f"{S2}/url", {"url": f"{APP}/late?s=1"}) is None, "navigate after a timed-out one")
+req("POST", f"{S2}/timeouts", {"script": 500, "implicit": 3000})
+check(req("GET", f"{S2}/timeouts") == {"pageLoad": 1000, "script": 500, "implicit": 3000}, "timeouts set")
+check(req("POST", f"{S2}/execute/sync", {"script": "await new Promise(r => setTimeout(r, 3000))", "args": []}, expect=500)["error"] == "script timeout", "script timeout")
+check(E in req("POST", f"{S2}/element", {"using": "css selector", "value": "#late"}), "implicit wait found the late element")
+check(req("POST", f"{S2}/timeouts", {"implicit": -1}, expect=400)["error"] == "invalid argument", "bad timeout")
+req("DELETE", S2)
+ok("timeouts: pageLoad, script, implicit")
+
 # the session socket refuses a client of another protocol version, with what to do about it
 sock = socket.socket(socket.AF_UNIX); sock.connect(os.path.expanduser(f"~/.config/webkit-cli/run/{profile}.sock"))
 sock.sendall(json.dumps({"v": 1, "cmd": "tabs", "timeout": 5}).encode() + b"\n")

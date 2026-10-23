@@ -1,7 +1,7 @@
 import Foundation
 
 /// Bumped whenever Request/Response or the set of commands changes; client and session must agree.
-let sessionProtocolVersion = 2
+let sessionProtocolVersion = 3
 
 /// One command for a profile's session. Crosses the unix socket as a JSON line.
 struct Request: Codable {
@@ -25,6 +25,7 @@ struct Request: Codable {
   var maxChars: Int?
   var json: Bool?
   var interactive: Bool?
+  var strategy: String?      // WebDriver pageLoadStrategy for goto/click/nav: normal (nil), eager, none
 }
 
 let defaultHumanTimeout: Double = 600
@@ -113,8 +114,7 @@ final class Engine {
       return try jsonString(info)
     case "goto":
       let (id, tab) = try tab(r.target)
-      try await tab.load(try requireURL(r.url))
-      try await settle(tab, r.wait, cap: 3)
+      try await load(tab, try requireURL(r.url), r, deadline: deadline)
       try await escalateIfChallenged(id, r, deadline: deadline)
       var info = try await pageInfo(tab)
       info["tab"] = id
@@ -167,11 +167,13 @@ final class Engine {
     case "click":
       let (id, tab) = try tab(r.target)
       guard let selector = r.selector else { throw CLIError("click needs a selector") }
+      let strategy = try loadStrategy(r)
       let hit = try await tab.callJS(clickJS, ["selector": selector])
-      // the click is dispatched on the next tick; give a navigation it starts a moment to begin
-      try await Task.sleep(nanoseconds: 500_000_000)
-      guard try await tab.waitUntilIdle(until: { deadline.expired }) else { throw timeoutError(r) }
-      try await settle(tab, r.wait, cap: 1)
+      if strategy != "none" {
+        // the click is dispatched on the next tick; give a navigation it starts a moment to begin
+        try await Task.sleep(nanoseconds: strategy == "eager" ? 200_000_000 : 500_000_000)
+        try await arrive(tab, strategy, r, deadline: deadline, cap: 1)
+      }
       try await escalateIfChallenged(id, r, deadline: deadline)
       var info = try await pageInfo(tab)
       info["tab"] = id
@@ -219,10 +221,12 @@ final class Engine {
       case "reload": js = "location.reload()"
       default: throw CLIError("nav needs back, forward or reload", code: ExitCode.usage)
       }
+      let strategy = try loadStrategy(r)
       _ = try await tab.callJS(js)
-      try await Task.sleep(nanoseconds: 300_000_000)
-      guard try await tab.waitUntilIdle(until: { deadline.expired }) else { throw timeoutError(r) }
-      try await settle(tab, r.wait, cap: 3)
+      if strategy != "none" {
+        try await Task.sleep(nanoseconds: strategy == "eager" ? 100_000_000 : 300_000_000)
+        try await arrive(tab, strategy, r, deadline: deadline, cap: 3)
+      }
       var info = try await pageInfo(tab)
       info["tab"] = id
       return try jsonString(info)
@@ -428,6 +432,57 @@ final class Engine {
   private func timeoutError(_ r: Request, url: String? = nil) -> CLIError {
     let at = url.map { " (tab is at \($0))" } ?? ""
     return CLIError("\(r.cmd) timed out after \(Int(r.timeout.rounded(.up)))s\(at) — raise with --timeout", code: ExitCode.timeout)
+  }
+
+  private func loadStrategy(_ r: Request) throws -> String {
+    let s = r.strategy ?? "normal"
+    guard ["normal", "eager", "none"].contains(s) else {
+      throw CLIError("page load strategy must be normal, eager or none, got '\(s)'", code: ExitCode.usage)
+    }
+    return s
+  }
+
+  /// normal: the load event, then the quiet settle; eager: the new document's DOMContentLoaded;
+  /// none: the navigation has been asked for. Under eager/none the load carries on in the tab.
+  private func load(_ tab: Browser, _ url: URL, _ r: Request, deadline: Deadline) async throws {
+    let strategy = try loadStrategy(r)
+    guard strategy != "normal" else {
+      try await tab.load(url)
+      try await settle(tab, r.wait, cap: 3)
+      return
+    }
+    var outcome: Result<Void, Error>?
+    Task { @MainActor in
+      do { try await tab.load(url); outcome = .success(()) } catch { outcome = .failure(error) }
+    }
+    await Task.yield()
+    if strategy == "none" { return }
+    while true {
+      if let outcome { return try outcome.get() }
+      if try await domReady(tab) { return }
+      if deadline.expired { throw timeoutError(r, url: tab.url?.absoluteString) }
+      try await Task.sleep(nanoseconds: 25_000_000)
+    }
+  }
+
+  /// After the page itself may have started a navigation (click, history): wait for it per strategy.
+  private func arrive(_ tab: Browser, _ strategy: String, _ r: Request, deadline: Deadline, cap: Double) async throws {
+    guard strategy == "eager" else {
+      guard try await tab.waitUntilIdle(until: { deadline.expired }) else { throw timeoutError(r) }
+      try await settle(tab, r.wait, cap: cap)
+      return
+    }
+    while tab.isLoading {
+      if try await domReady(tab) { return }
+      if deadline.expired { throw timeoutError(r, url: tab.url?.absoluteString) }
+      try await Task.sleep(nanoseconds: 25_000_000)
+    }
+  }
+
+  /// The navigation has committed and the new document has parsed (DOMContentLoaded).
+  private func domReady(_ tab: Browser) async throws -> Bool {
+    guard tab.committed else { return false }
+    return (try? await tab.callJS("return document.readyState")) as? String ?? "loading" != "loading"
   }
 
   /// --wait sleeps that long; without it, waits until the page is quiet, at most `cap` seconds.

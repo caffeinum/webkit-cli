@@ -97,6 +97,16 @@ $B close "$t" $A >/dev/null
 [ "$($B tabs $A)" = "[]" ] || fail "tabs after close"
 ok "one-shot snapshot/shot, timeout=3, text=2, throwaway open=2, close/tabs"
 
+# a page that stores a CryptoKey in IndexedDB must not block on the keychain (mac asked it, unanswered)
+t=$($B open "$APP/webcrypto" --timeout 20 $A | tab) || fail "webcrypto page did not load (keychain prompt?)"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  wc=$($B eval "$t" "return document.getElementById('wc').textContent" --raw --timeout 10 $A) || fail "eval on the webcrypto page"
+  [ "$wc" = storing ] || break; sleep 0.3
+done
+[ "$wc" = stored ] || fail "CryptoKey not stored in IndexedDB: $wc"
+$B close "$t" $A >/dev/null
+ok "WebCrypto key stored in IndexedDB without the keychain"
+
 $B stop $A >/dev/null
 $B forget "$P" >/dev/null || fail forget
 ok "stop + forget"

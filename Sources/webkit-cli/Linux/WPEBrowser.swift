@@ -20,6 +20,8 @@ final class WebStore {
 final class Browser {
   private var tab: OpaquePointer?
   private(set) var lastStatus: Int?
+  /// False from the start of a navigation until its document replaces the old one.
+  private(set) var committed = true
   private(set) var lastFailure: String?
   private(set) var isClosed = false
   var nextRef = 1
@@ -150,6 +152,7 @@ final class Browser {
     lastStatus = nil
     lastFailure = nil
     requestedURL = url.absoluteString
+    committed = false
     try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
       finishLoad(.failure(CLIError("load of \(requestedURL ?? "?") was superseded by another load")))
       pendingLoad = c
@@ -183,7 +186,9 @@ final class Browser {
     switch Int(event) {
     case Int(WK_LOAD_STARTED):
       lastFailure = nil
+      committed = false
     case Int(WK_LOAD_COMMITTED):
+      committed = true
       failRunningJS(Browser.navigatedAway)
     case Int(WK_LOAD_FINISHED):
       finishLoad(.success(()))
