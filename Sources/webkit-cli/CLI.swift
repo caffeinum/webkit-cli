@@ -1,7 +1,7 @@
 import Foundation
 
 /// Bumped with each release tag (vX.Y.Z).
-let webkitCLIVersion = "0.3.0"
+let webkitCLIVersion = "0.4.0"
 
 let helpText = """
   webkit-cli — drive the system WebKit headless, with persistent logged-in profiles.
@@ -44,6 +44,12 @@ let helpText = """
     webkit-cli create <account>             make an empty profile (no sign-in window)
     webkit-cli forget <account>             delete a profile and all its website data
     webkit-cli doctor                       check that headless pages really render (visible + rAF)
+
+  WEBDRIVER
+    webkit-cli webdriver [--port N]         W3C WebDriver on 127.0.0.1 over the profile's session
+                                            (one WebDriver session = one tab); prints {"port":N,…}
+                                            when ready (--port 0 or none = any free port); SIGTERM
+                                            closes its tabs and exits
 
   Everything shares one default profile ("main") unless you pass --account. Sign in to as many
   sites as you like into it — `auth google.com`, then `auth github.com` — and every headless
@@ -118,6 +124,7 @@ enum Command {
   case doctor
   case stop(account: String)
   case serve(account: String, idle: Double)
+  case webdriver(account: String, port: Int)
   case session(account: String, request: Request)
 }
 
@@ -142,6 +149,7 @@ struct Options {
   var json = false
   var redact = false
   var interactive = false
+  var port = 0
   var maxChars: Int?
 }
 
@@ -179,6 +187,9 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
       guard let n = Int(try value(a)), n > 0 else { throw CLIError("--max-chars needs a positive number", code: ExitCode.usage) }
       opts.maxChars = n
     case "--reason": opts.reason = try value(a)
+    case "--port":
+      guard let n = Int(try value(a)), (0...65535).contains(n) else { throw CLIError("--port needs 0–65535", code: ExitCode.usage) }
+      opts.port = n
     case "--challenge-url":
       let pattern = try value(a)
       guard (try? NSRegularExpression(pattern: pattern)) != nil else {
@@ -270,6 +281,10 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
   case "serve":
     try need(0, "serve [--account <name>] [--idle <sec>]")
     return (.serve(account: account, idle: opts.idle), opts)
+  case "webdriver":
+    try need(0, "webdriver [--port N] [--account <name>]")
+    guard account != "-" else { throw CLIError("webdriver needs a saved profile — `-` has no session", code: ExitCode.usage) }
+    return (.webdriver(account: account, port: opts.port), opts)
   case "open":
     try need(1, "open <url>")
     return (session("open", url: try parseURL(rest[0]).absoluteString), opts)

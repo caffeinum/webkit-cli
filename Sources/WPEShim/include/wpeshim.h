@@ -57,6 +57,14 @@ void wk_session_session_cookies(wk_session *session, void *req, wk_cookies_done 
 void wk_session_add_cookie(wk_session *session, const char *domain, const char *path, int secure, int http_only,
                            const char *name, const char *value, void *req, wk_done done);
 
+/// Every cookie, one per line: "domain\tpath\tsecure\thttponly\texpiry\tsamesite\tname\tvalue"
+/// (expiry: unix seconds, -1 = session-only; samesite: None|Lax|Strict).
+void wk_session_all_cookies(wk_session *session, void *req, wk_cookies_done done);
+/// expiry < 0 = session-only; same_site: "None", "Lax", "Strict" or NULL (WebKit's default).
+void wk_session_set_cookie(wk_session *session, const char *domain, const char *path, int secure, int http_only,
+                           long long expiry, const char *same_site, const char *name, const char *value, void *req, wk_done done);
+void wk_session_delete_cookie(wk_session *session, const char *domain, const char *path, const char *name, void *req, wk_done done);
+
 /// Runs the GLib main loop forever, draining Swift's main queue whenever `wake_fd` is readable
 /// (libdispatch's main-queue eventfd) so @MainActor code and WebKit share the main thread.
 void wk_main_loop_run(int wake_fd, void (*drain)(void));

@@ -90,6 +90,9 @@ fi
 echo "suite: check-session.sh (local fixture)"
 job session "cd /root/webkit-cli && $NOSANDBOX BIN=.build/release/webkit-cli sh scripts/check-session.sh"
 
+echo "suite: check-webdriver.sh (W3C endpoints)"
+job webdriver "cd /root/webkit-cli && $NOSANDBOX BIN=.build/release/webkit-cli sh scripts/check-webdriver.sh"
+
 echo "suite: check-windows-linux.sh (auth/show/--escalate under headless weston)"
 job windows "cd /root/webkit-cli && $NOSANDBOX BIN=.build/release/webkit-cli sh scripts/check-windows-linux.sh"
 

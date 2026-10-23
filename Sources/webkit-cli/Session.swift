@@ -1,7 +1,11 @@
 import Foundation
 
+/// Bumped whenever Request/Response or the set of commands changes; client and session must agree.
+let sessionProtocolVersion = 2
+
 /// One command for a profile's session. Crosses the unix socket as a JSON line.
 struct Request: Codable {
+  var v: Int? = sessionProtocolVersion
   var cmd: String
   var target: String?        // tab id ("t3") or URL
   var url: String?
@@ -51,6 +55,7 @@ let builtinChallengeURLs = [
 ]
 
 struct Response: Codable {
+  var v: Int? = sessionProtocolVersion
   var ok: Bool
   var output: String?
   var error: String?
@@ -205,6 +210,44 @@ final class Engine {
       let (id, _) = try tab(r.target)
       closeTab(id)
       return try jsonString(["closed": id])
+    case "nav":
+      let (id, tab) = try tab(r.target)
+      let js: String
+      switch r.text {
+      case "back": js = "history.back()"
+      case "forward": js = "history.forward()"
+      case "reload": js = "location.reload()"
+      default: throw CLIError("nav needs back, forward or reload", code: ExitCode.usage)
+      }
+      _ = try await tab.callJS(js)
+      try await Task.sleep(nanoseconds: 300_000_000)
+      guard try await tab.waitUntilIdle(until: { deadline.expired }) else { throw timeoutError(r) }
+      try await settle(tab, r.wait, cap: 3)
+      var info = try await pageInfo(tab)
+      info["tab"] = id
+      return try jsonString(info)
+    case "cookies":
+      let (_, tab) = try tab(r.target)
+      guard let url = tab.url else { throw CLIError("tab has no page") }
+      return try jsonString(try await profile.allCookies().filter { $0.applies(to: url) }.map(\.json))
+    case "set-cookie":
+      let (_, tab) = try tab(r.target)
+      guard let url = tab.url, let host = url.host else { throw CLIError("tab has no page to set a cookie for") }
+      guard let raw = r.text, var cookie = try? JSONDecoder().decode(WireCookie.self, from: Data(raw.utf8)) else {
+        throw CLIError("set-cookie needs a cookie as JSON {name, value, …}", code: ExitCode.usage)
+      }
+      if cookie.domain == nil { cookie.domain = host }
+      guard cookie.applies(to: URL(string: "https://\(host)\(cookie.path ?? "/")")!) else {
+        throw CLIError("cookie domain \(cookie.domain!) doesn't match the page (\(host))", code: ExitCode.usage)
+      }
+      try await profile.setCookie(cookie)
+      return try jsonString(cookie.json)
+    case "delete-cookies":
+      let (_, tab) = try tab(r.target)
+      guard let url = tab.url else { throw CLIError("tab has no page") }
+      let gone = try await profile.allCookies().filter { $0.applies(to: url) && (r.text == nil || $0.name == r.text) }
+      for c in gone { try await profile.deleteCookie(c) }
+      return try jsonString(["deleted": gone.count])
     default:
       throw CLIError("unknown session command '\(r.cmd)'", code: ExitCode.usage)
     }

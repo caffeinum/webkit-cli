@@ -82,6 +82,7 @@ webkit-cli accounts                     list saved profiles (JSON)
 webkit-cli create <account>             make an empty profile (no sign-in window)
 webkit-cli forget <account>             delete a profile and all its website data
 webkit-cli doctor                       check that headless pages really render
+webkit-cli webdriver [--port N]         W3C WebDriver endpoint over the profile's session (see below)
 
 -a, --account <name>    a separate profile instead of the default; `-` = throwaway (one-shot only)
 --wait <sec>            fixed settle after a load/click; default: wait until the page is quiet
@@ -186,6 +187,22 @@ webkit-cli wait  $tab --until-url dashboard --escalate --human-timeout 300
 - Time spent waiting for the person doesn't count toward `--timeout`. `--human-timeout` (default 600s) bounds it, then exit 3.
 - `show`, `hide`, `tabs`, `close` and `stop` skip the command queue, so they work while something is waiting on the person. `close` or `stop` on the tab a `wait` is watching makes that wait exit 1 ("closed before Done"). The session never idles out while a tab is shown.
 - `ESCALATE=1 scripts/browser-use-apikey.sh` uses this for Google's "confirm it's you".
+
+## WebDriver
+
+```sh
+webkit-cli webdriver --account bench --port 4444    # → {"account":"bench","port":4444,"url":"http://127.0.0.1:4444"}
+```
+
+A W3C WebDriver endpoint on 127.0.0.1 over the profile's session, so WebDriver clients (agent-browser, Selenium-style) can drive webkit-cli. One WebDriver session is one tab in the profile's session process. The `webdriver` process holds no WebKit itself, it only translates HTTP into session commands. `--port 0` (the default) picks a free port. It prints the JSON line once it's listening, and SIGTERM/Ctrl-C closes its tabs and exits 0.
+
+- Supported: `POST /session`, `DELETE /session/{id}`, `GET /status`, `GET|POST url`, `GET title`, `GET source`, `POST back|forward|refresh`, `POST execute/sync|async`, `GET|POST|DELETE cookie[/{name}]` (httpOnly cookies included), `POST element|elements` (css selector, xpath, link text, partial link text, tag name), `POST element/{id}/click|clear|value`, `GET element/{id}/text|name|attribute/{n}|property/{n}`, `GET screenshot`, `POST|DELETE actions` (key, pointer, wheel, pause), `GET window[/handles]`.
+- Anything else answers 404 `unknown command`.
+- Element handles are `data-wd` attributes on the element. A handle whose element is gone, or one from before a navigation, answers `stale element reference`.
+- Clicks and typing go through the same paths as `click` and `type`, so disabled, inert or behind-modal elements are refused.
+- `value` appends like a keyboard would. Of the special keys, only Enter is acted on (it submits the form). Events are synthetic (`isTrusted: false`).
+
+The session socket's JSON lines carry a protocol version (`v`). A client and a session process of different versions refuse each other with "run `webkit-cli stop`", instead of failing on a command one of them doesn't know.
 
 ## Security
 

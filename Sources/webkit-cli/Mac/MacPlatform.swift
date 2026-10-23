@@ -25,6 +25,36 @@ struct Profile {
   }
 }
 
+extension Profile {
+  func allCookies() async -> [WireCookie] {
+    await store.httpCookieStore.allCookies().map { c in
+      WireCookie(name: c.name, value: c.value, domain: c.domain, path: c.path, secure: c.isSecure, httpOnly: c.isHTTPOnly,
+                 expiry: c.expiresDate.map { Int($0.timeIntervalSince1970) },
+                 sameSite: c.sameSitePolicy.map { $0 == .sameSiteStrict ? "Strict" : "Lax" })
+    }
+  }
+
+  func setCookie(_ c: WireCookie) async throws {
+    var props: [HTTPCookiePropertyKey: Any] = [.name: c.name, .value: c.value, .domain: c.domain as Any, .path: c.path ?? "/"]
+    if c.secure == true { props[.secure] = "TRUE" }
+    if c.httpOnly == true { props[HTTPCookiePropertyKey("HttpOnly")] = "TRUE" }
+    if let e = c.expiry { props[.expires] = Date(timeIntervalSince1970: Double(e)) }
+    switch c.sameSite {
+    case "Strict": props[.sameSitePolicy] = HTTPCookieStringPolicy.sameSiteStrict.rawValue
+    case "Lax": props[.sameSitePolicy] = HTTPCookieStringPolicy.sameSiteLax.rawValue
+    default: break
+    }
+    guard let cookie = HTTPCookie(properties: props) else { throw CLIError("invalid cookie \(c.name)") }
+    await store.httpCookieStore.setCookie(cookie)
+  }
+
+  func deleteCookie(_ c: WireCookie) async {
+    for k in await store.httpCookieStore.allCookies() where k.name == c.name && k.domain == c.domain && k.path == (c.path ?? "/") {
+      await store.httpCookieStore.deleteCookie(k)
+    }
+  }
+}
+
 @MainActor
 func ephemeralStore() -> WKWebsiteDataStore { .nonPersistent() }
 

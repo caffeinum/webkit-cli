@@ -37,6 +37,35 @@ struct Profile {
   }
 }
 
+extension Profile {
+  func allCookies() async throws -> [WireCookie] {
+    let lines = try await withCheckedThrowingContinuation { (c: CheckedContinuation<String, Error>) in
+      wk_session_all_cookies(store.handle, Unmanaged.passRetained(Box(c)).toOpaque(), cookiesDone)
+    }
+    return try lines.split(separator: "\n").map { line in
+      let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+      guard f.count == 8, let expiry = Int(f[4]) else { throw CLIError("unreadable cookie line from WebKit: \(line.prefix(80))") }
+      return WireCookie(name: f[6], value: f[7], domain: f[0], path: f[1], secure: f[2] == "1", httpOnly: f[3] == "1",
+                        expiry: expiry < 0 ? nil : expiry, sameSite: f[5])
+    }
+  }
+
+  func setCookie(_ k: WireCookie) async throws {
+    guard let domain = k.domain else { throw CLIError("cookie \(k.name) needs a domain") }
+    try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+      wk_session_set_cookie(store.handle, domain, k.path ?? "/", k.secure == true ? 1 : 0, k.httpOnly == true ? 1 : 0,
+                            Int64(k.expiry ?? -1), k.sameSite, k.name, k.value, Unmanaged.passRetained(Box(c)).toOpaque(), cookieAdded)
+    }
+  }
+
+  func deleteCookie(_ k: WireCookie) async throws {
+    guard let domain = k.domain else { throw CLIError("cookie \(k.name) needs a domain") }
+    try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+      wk_session_delete_cookie(store.handle, domain, k.path ?? "/", k.name, Unmanaged.passRetained(Box(c)).toOpaque(), cookieAdded)
+    }
+  }
+}
+
 private func restoreSessionCookies(into store: WebStore, from file: URL) async throws {
   guard FileManager.default.fileExists(atPath: file.path) else { return }
   let text = try String(contentsOf: file, encoding: .utf8)
@@ -65,7 +94,7 @@ private let cookiesDone: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer
 
 private let cookieAdded: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?) -> Void = { req, error in
   let box = Unmanaged<Box<Void>>.fromOpaque(req!).takeRetainedValue()
-  if let error { box.continuation.resume(throwing: CLIError("could not restore a cookie: \(String(cString: error))")) }
+  if let error { box.continuation.resume(throwing: CLIError("cookie store: \(String(cString: error))")) }
   else { box.continuation.resume() }
 }
 

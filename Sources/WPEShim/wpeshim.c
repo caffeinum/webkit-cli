@@ -297,6 +297,81 @@ void wk_session_add_cookie(wk_session *s, const char *domain, const char *path, 
   webkit_cookie_manager_add_cookie(webkit_network_session_get_cookie_manager(s->session), k, NULL, cookie_added, c);
   soup_cookie_free(k);
 }
+static const char *same_site_name(SoupSameSitePolicy p) {
+  switch (p) {
+  case SOUP_SAME_SITE_POLICY_LAX: return "Lax";
+  case SOUP_SAME_SITE_POLICY_STRICT: return "Strict";
+  default: return "None";
+  }
+}
+
+static void all_cookies_finished(GObject *source, GAsyncResult *res, gpointer data) {
+  cookies_call *c = data;
+  GError *error = NULL;
+  GList *list = webkit_cookie_manager_get_all_cookies_finish(WEBKIT_COOKIE_MANAGER(source), res, &error);
+  if (error) {
+    c->done(c->req, NULL, error->message);
+    g_error_free(error);
+  } else {
+    GString *out = g_string_new(NULL);
+    for (GList *l = list; l; l = l->next) {
+      SoupCookie *k = l->data;
+      GDateTime *exp = soup_cookie_get_expires(k);
+      g_string_append_printf(out, "%s\t%s\t%d\t%d\t%lld\t%s\t%s\t%s\n", soup_cookie_get_domain(k), soup_cookie_get_path(k),
+                             soup_cookie_get_secure(k), soup_cookie_get_http_only(k),
+                             exp ? (long long)g_date_time_to_unix(exp) : -1LL, same_site_name(soup_cookie_get_same_site_policy(k)),
+                             soup_cookie_get_name(k), soup_cookie_get_value(k));
+    }
+    g_list_free_full(list, (GDestroyNotify)soup_cookie_free);
+    c->done(c->req, out->str, NULL);
+    g_string_free(out, TRUE);
+  }
+  g_free(c);
+}
+
+void wk_session_all_cookies(wk_session *s, void *req, wk_cookies_done done) {
+  cookies_call *c = g_new0(cookies_call, 1);
+  c->req = req; c->done = done;
+  webkit_cookie_manager_get_all_cookies(webkit_network_session_get_cookie_manager(s->session), NULL, all_cookies_finished, c);
+}
+
+void wk_session_set_cookie(wk_session *s, const char *domain, const char *path, int secure, int http_only,
+                           long long expiry, const char *same_site, const char *name, const char *value, void *req, wk_done done) {
+  SoupCookie *k = soup_cookie_new(name, value, domain, path, -1);
+  soup_cookie_set_secure(k, secure);
+  soup_cookie_set_http_only(k, http_only);
+  if (expiry >= 0) {
+    GDateTime *exp = g_date_time_new_from_unix_utc(expiry);
+    soup_cookie_set_expires(k, exp);
+    g_date_time_unref(exp);
+  }
+  if (same_site) {
+    soup_cookie_set_same_site_policy(k, !strcmp(same_site, "Strict") ? SOUP_SAME_SITE_POLICY_STRICT
+                                        : !strcmp(same_site, "Lax") ? SOUP_SAME_SITE_POLICY_LAX : SOUP_SAME_SITE_POLICY_NONE);
+  }
+  done_call *c = g_new0(done_call, 1);
+  c->req = req; c->done = done;
+  webkit_cookie_manager_add_cookie(webkit_network_session_get_cookie_manager(s->session), k, NULL, cookie_added, c);
+  soup_cookie_free(k);
+}
+
+static void cookie_deleted(GObject *source, GAsyncResult *res, gpointer data) {
+  done_call *c = data;
+  GError *error = NULL;
+  webkit_cookie_manager_delete_cookie_finish(WEBKIT_COOKIE_MANAGER(source), res, &error);
+  c->done(c->req, error ? error->message : NULL);
+  if (error) g_error_free(error);
+  g_free(c);
+}
+
+void wk_session_delete_cookie(wk_session *s, const char *domain, const char *path, const char *name, void *req, wk_done done) {
+  SoupCookie *k = soup_cookie_new(name, "", domain, path, -1);
+  done_call *c = g_new0(done_call, 1);
+  c->req = req; c->done = done;
+  webkit_cookie_manager_delete_cookie(webkit_network_session_get_cookie_manager(s->session), k, NULL, cookie_deleted, c);
+  soup_cookie_free(k);
+}
+
 static gboolean main_queue_ready(gint fd, GIOCondition condition, gpointer drain) {
   ((void (*)(void))drain)();
   return G_SOURCE_CONTINUE;

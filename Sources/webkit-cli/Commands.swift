@@ -16,6 +16,11 @@ func runWithoutApp(_ command: Command) throws -> Bool {
     guard accounts.byName[account] == nil else { throw CLIError("profile '\(account)' already exists") }
     let id = try accounts.create(account)
     print(try jsonString(["created": account, "id": id.uuidString]))
+  case .webdriver(let account, let port):
+    try Accounts.requirePinnedExecutableName()
+    try Accounts.validate(account)
+    if account != defaultAccount { _ = try Accounts.load().id(of: account) }
+    try WebDriverServer(account: account, idle: options.idle, timeout: options.timeout).run(port: port)
   case .stop(let account):
     try Accounts.validate(account)
     let stopped = try SessionClient.stopIfRunning(account: account)
@@ -51,7 +56,7 @@ func emit(_ result: String, _ opts: Options) throws {
 @MainActor
 func run(_ command: Command, _ opts: Options) async throws {
   switch command {
-  case .help, .version, .accounts, .create, .stop:
+  case .help, .version, .accounts, .create, .stop, .webdriver:
     preconditionFailure("handled by runWithoutApp")
   case .session(_, let request):
     // throwaway profile: no session process, tabs die with this command

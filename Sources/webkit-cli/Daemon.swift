@@ -8,24 +8,24 @@ import WPEShim
 
 // the few POSIX spellings that differ between macOS and Linux
 #if os(Linux)
-private let streamSocket = Int32(SOCK_STREAM.rawValue)
+let streamSocket = Int32(SOCK_STREAM.rawValue)
 private let spawnSetSID: Int16 = 0x80 // POSIX_SPAWN_SETSID (glibc)
 private func newSpawnActions() -> posix_spawn_file_actions_t { posix_spawn_file_actions_t() }
 private func newSpawnAttr() -> posix_spawnattr_t { posix_spawnattr_t() }
-private func posixConnect(_ fd: Int32, _ addr: UnsafePointer<sockaddr>, _ len: socklen_t) -> Int32 { Glibc.connect(fd, addr, len) }
+func posixConnect(_ fd: Int32, _ addr: UnsafePointer<sockaddr>, _ len: socklen_t) -> Int32 { Glibc.connect(fd, addr, len) }
 /// Linux has no SO_NOSIGPIPE; the session ignores SIGPIPE, and a client does the same.
-private func noSigpipe(_ fd: Int32) { signal(SIGPIPE, SIG_IGN) }
+func noSigpipe(_ fd: Int32) { signal(SIGPIPE, SIG_IGN) }
 private func peerUID(_ fd: Int32) -> uid_t? {
   var uid: UInt32 = 0
   return wk_peer_uid(fd, &uid) == 0 ? uid : nil
 }
 #else
-private let streamSocket = SOCK_STREAM
+let streamSocket = SOCK_STREAM
 private let spawnSetSID = Int16(POSIX_SPAWN_SETSID)
 private func newSpawnActions() -> posix_spawn_file_actions_t? { nil }
 private func newSpawnAttr() -> posix_spawnattr_t? { nil }
-private func posixConnect(_ fd: Int32, _ addr: UnsafePointer<sockaddr>, _ len: socklen_t) -> Int32 { Darwin.connect(fd, addr, len) }
-private func noSigpipe(_ fd: Int32) {
+func posixConnect(_ fd: Int32, _ addr: UnsafePointer<sockaddr>, _ len: socklen_t) -> Int32 { Darwin.connect(fd, addr, len) }
+func noSigpipe(_ fd: Int32) {
   var on: Int32 = 1
   setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
 }
@@ -104,11 +104,19 @@ enum SessionClient {
           printErr("webkit-cli: \(note.note)")
           continue
         }
+        let resp: Response
         do {
-          return try JSONDecoder().decode(Response.self, from: line)
+          resp = try JSONDecoder().decode(Response.self, from: line)
         } catch {
           throw CLIError("unreadable answer from session process: \(String(decoding: line.prefix(200), as: UTF8.self))")
         }
+        guard resp.v == sessionProtocolVersion || req.cmd == "stop" else {
+          throw CLIError("""
+            the running session process speaks protocol \(resp.v.map(String.init) ?? "1") and this webkit-cli \(sessionProtocolVersion) \
+            (it was started by an older binary) — run `webkit-cli stop` (with the same --account) and retry
+            """)
+        }
+        return resp
       }
       guard let chunk = try readChunk(fd) else {
         throw CLIError("session process closed the connection without answering (crashed? see its log)")
@@ -267,6 +275,13 @@ final class SessionServer {
     }
     guard let req = call.request else {
       call.answer(Response(ok: false, error: "unreadable request: \(call.decodeError ?? "?")", code: ExitCode.usage))
+      return
+    }
+    guard req.v == sessionProtocolVersion || req.cmd == "stop" else {
+      call.answer(Response(ok: false, error: """
+        this session process speaks protocol \(sessionProtocolVersion) and the client \(req.v.map(String.init) ?? "an older one") \
+        — run `webkit-cli stop --account \(account)` and retry
+        """, code: ExitCode.failure))
       return
     }
     if req.cmd == "stop" {
@@ -451,7 +466,7 @@ private func listenUnix(_ path: String) throws -> Int32 {
   return fd
 }
 
-private func writeAll(_ fd: Int32, _ data: Data) throws {
+func writeAll(_ fd: Int32, _ data: Data) throws {
   try data.withUnsafeBytes { (buf: UnsafeRawBufferPointer) in
     var off = 0
     while off < buf.count {
@@ -463,7 +478,7 @@ private func writeAll(_ fd: Int32, _ data: Data) throws {
 }
 
 /// Next bytes from the socket, or nil at end of stream.
-private func readChunk(_ fd: Int32) throws -> Data? {
+func readChunk(_ fd: Int32) throws -> Data? {
   var buf = [UInt8](repeating: 0, count: 65536)
   let n = read(fd, &buf, buf.count)
   if n == 0 { return nil }
