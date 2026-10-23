@@ -443,7 +443,7 @@ final class Engine {
       let left = until.timeIntervalSinceNow
       guard left > 0 else { return }
       // a navigation that starts mid-wait replaces the page and fails the call; wait for the new page then
-      if (try? await tab.callJS(quietJS, ["quietMs": 500, "capMs": left * 1000])) != nil { return }
+      if (try? await tab.callJS(quietJS, ["quietMs": 150, "capMs": left * 1000])) != nil { return }
       try await Task.sleep(nanoseconds: 100_000_000)
     }
   }
@@ -474,22 +474,34 @@ func writePNG(_ data: Data, to url: URL) throws {
   }
 }
 
-/// Resolves once no resource has finished loading and the DOM hasn't changed for quietMs, or after capMs.
+/// Resolves once the page has loaded and nothing has happened for quietMs (no resource finished, no DOM
+/// change), or after capMs. Quiet time counts from the page's own last activity (load end, last
+/// resource), so a page that settled before we asked returns at once.
 private let quietJS = """
   return await new Promise(resolve => {
     const start = performance.now();
-    let last = start;
+    const lastSeen = () => {
+      if (document.readyState !== 'complete') return performance.now();
+      const nav = performance.getEntriesByType('navigation')[0];
+      const res = performance.getEntriesByType('resource');
+      return Math.max(nav ? nav.loadEventEnd : 0, res.length ? res[res.length - 1].responseEnd : 0);
+    };
+    let last = lastSeen();
     const bump = () => { last = performance.now(); };
     const mo = new MutationObserver(bump);
     mo.observe(document, {subtree: true, childList: true, characterData: true});
     let po = null;
     try { po = new PerformanceObserver(bump); po.observe({type: 'resource'}); } catch (e) {}
-    const iv = setInterval(() => {
+    const check = () => {
       const now = performance.now();
-      if (now - last < quietMs && now - start < capMs) return;
+      if (document.readyState !== 'complete') last = now;
+      if (now - last < quietMs && now - start < capMs) return false;
       clearInterval(iv); mo.disconnect(); if (po) po.disconnect();
       resolve(Math.round(now - start));
-    }, 50);
+      return true;
+    };
+    const iv = setInterval(check, 25);
+    check();
   });
   """
 

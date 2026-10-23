@@ -86,7 +86,7 @@ webkit-cli webdriver [--port N]         W3C WebDriver endpoint over the profile'
 
 -a, --account <name>    a separate profile instead of the default; `-` = throwaway (one-shot only)
 --wait <sec>            fixed settle after a load/click; default: wait until the page is quiet
-                        (0.5s without new requests or DOM changes), at most 3s (click 1s)
+                        (0.15s without new requests or DOM changes), at most 3s (click 1s)
 --timeout <sec>         give up and exit 3 (default 60, counted from when the command reaches the session)
 --until-url / --until-selector   conditions for `wait`
 --out <file>            write eval/snapshot output to a 0600 file, print only {"written","bytes"}

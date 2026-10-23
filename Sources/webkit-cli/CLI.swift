@@ -1,7 +1,7 @@
 import Foundation
 
 /// Bumped with each release tag (vX.Y.Z).
-let webkitCLIVersion = "0.4.1"
+let webkitCLIVersion = "0.4.2"
 
 let helpText = """
   webkit-cli — drive the system WebKit headless, with persistent logged-in profiles.
@@ -69,7 +69,7 @@ let helpText = """
                             in memory, one-shot only. Named profiles are created by `auth`.
     --wait <sec>            fixed settle time after a load/click; by default open/goto/one-shot
                             wait until the page is quiet (no new requests or DOM changes for
-                            0.5s, at most 3s), click at most 1s, others don't wait
+                            0.15s, at most 3s), click at most 1s, others don't wait
     --timeout <sec>         give up after this long, exit 3 (default 60; `auth` never times out)
     --until-url <regex>     `wait` until the tab's URL matches
     --until-selector <css>  `wait` until an element matching <css> exists
