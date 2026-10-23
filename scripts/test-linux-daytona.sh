@@ -51,6 +51,16 @@ if ! d snapshot list | grep -q "$SNAP"; then
   echo "building Daytona snapshot $SNAP from linux/Dockerfile (a few minutes, once)"
   (cd linux && d snapshot create "$SNAP" -f Dockerfile --cpu 2 --memory 4 --disk 10) | tail -3
 fi
+# Daytona deactivates snapshots that go unused for a while; sandboxes can't start from those
+if ! d snapshot list | grep -q "$SNAP *ACTIVE"; then
+  echo "activating Daytona snapshot $SNAP"
+  d snapshot activate "$SNAP" >/dev/null || true
+  waited=0
+  until d snapshot list | grep -q "$SNAP *ACTIVE"; do
+    [ $waited -lt 1200 ] || { echo "snapshot $SNAP not active after ${waited}s" >&2; exit 1; }
+    sleep 15; waited=$((waited + 15))
+  done
+fi
 
 echo "creating sandbox $SB"
 d create --name "$SB" --snapshot "$SNAP" --auto-stop 30 --auto-delete 0 --label purpose=webkit-cli-test | grep -i "created" || { echo "sandbox create failed" >&2; exit 1; }

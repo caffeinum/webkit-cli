@@ -319,5 +319,9 @@ func parseURL(_ s: String) throws -> URL {
   guard let url = URL(string: hasScheme ? s : "https://" + s), url.host != nil || url.scheme == "about" || url.scheme == "file" else {
     throw CLIError("not a URL: \(s)", code: ExitCode.usage)
   }
+  // "1" or "t3" would otherwise load https://0.0.0.1/ or https://t3/
+  if !hasScheme, let host = url.host, !host.contains("."), host != "localhost" {
+    throw CLIError("'\(s)' is neither a tab id (like t3f9a2c — `webkit-cli tabs` lists them) nor a URL", code: ExitCode.usage)
+  }
   return url
 }
