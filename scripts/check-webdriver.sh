@@ -224,6 +224,14 @@ check(req("POST", f"{S2}/execute/sync", {"script": "return [arguments[0].id, doc
 untrusted = [e for e in js("return log") if not e["trusted"]]
 check(not untrusted, f"every input event is trusted: {untrusted[:5]}")
 check(req("POST", f"{S2}/element/{req('POST', f'{S2}/element', {'using': 'css selector', 'value': '#covered'})[E]}/click", {}, expect=400)["error"] == "element click intercepted", "covered element")
+# a page slow to take keys: the timeout answer waits until the keys already posted have landed
+req("POST", f"{S2}/url", {"url": f"{APP}/input?block=1"})
+area = req("POST", f"{S2}/element", {"using": "css selector", "value": "#area"})[E]
+req("POST", f"{S2}/timeouts", {"script": 1000})
+r = req("POST", f"{S2}/element/{area}/value", {"text": perkey}, expect=500)
+n3 = js("return area.value.length"); time.sleep(2)
+check(r["error"] == "timeout" and js("return area.value.length") == n3 < len(perkey), f"slow page: the value is final when timeout answers ({n3} → {js('return area.value.length')})")
+req("POST", f"{S2}/timeouts", {"script": 30000})
 req("DELETE", S2)
 ok("trusted input: hover, double click, held modifiers, send keys, wheel, click intercepted")
 

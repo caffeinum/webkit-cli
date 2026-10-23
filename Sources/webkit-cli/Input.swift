@@ -45,8 +45,9 @@ struct InputStep: Codable {
 }
 
 extension Browser {
-  /// Posts the steps in order and returns once the page has received them all. Stops between
-  /// batches once `stop` says so (a timed-out request), so no typing carries on behind its back.
+  /// Posts the steps in order and returns once the page has received them all. Once `stop` says so
+  /// (a timed-out request) it posts nothing more, waits for what it already posted to land and
+  /// throws: the page is final when the caller hears about it.
   func send(_ steps: [InputStep], until stop: () -> Bool = { false }) async throws {
     var mark = await inputMark()
     var sent: [String: Int] = [:] // DOM event type → events posted since `mark`
@@ -55,8 +56,11 @@ extension Browser {
       sent = [:]
     }
     for s in steps {
+      if stop() {
+        await flush()
+        throw CLIError("input stopped: the request timed out or its client hung up", code: ExitCode.timeout)
+      }
       if sent.values.reduce(0, +) >= inputBatch { await flush() }
-      if sent.isEmpty, stop() { throw CLIError("input stopped: the request timed out or its client hung up", code: ExitCode.timeout) }
       switch s.t {
       case .pause:
         try await Task.sleep(nanoseconds: UInt64(max(0, s.ms ?? 0) * 1e6))
@@ -84,7 +88,7 @@ extension Browser {
   }
 }
 
-/// Events posted before waiting for the page to catch up (and checking for a timeout).
+/// Events posted before waiting for the page to catch up (at most this many land after a timeout is noticed).
 private let inputBatch = 32
 
 /// A run of plain characters at least this long is inserted in one go instead of key by key:

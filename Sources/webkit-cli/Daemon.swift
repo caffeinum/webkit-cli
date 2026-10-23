@@ -299,7 +299,9 @@ final class SessionServer {
     do {
       let deadline = Deadline(req.timeout - Date().timeIntervalSince(call.arrived))
       deadline.abandoned = { call.clientGone }
-      let output = try await withDeadline(deadline, cmd: req.cmd, timeout: req.timeout) {
+      // input stops itself at the deadline once what it posted has landed: answer after that, so the page is final
+      let grace: Double = ["input", "type"].contains(req.cmd) ? 10 : 0
+      let output = try await withDeadline(deadline, cmd: req.cmd, timeout: req.timeout, grace: grace) {
         try await Engine.$noteSink.withValue({ call.send(note: $0) }) {
           try await self.engine.handle(req, deadline: deadline)
         }
@@ -420,10 +422,11 @@ private func waitReadable(_ fd: Int32, unlessHungUp peer: Int32) throws -> Bool 
   }
 }
 
-/// Resolves with the body's result, or throws a timeout once `deadline` expires (the body keeps running).
+/// Resolves with the body's result, or throws a timeout once `deadline` expires (the body keeps running),
+/// or `grace` seconds later for a body that ends itself at the deadline.
 /// The deadline pauses while a person works in a shown tab.
 @MainActor
-func withDeadline(_ deadline: Deadline, cmd: String, timeout: Double,
+func withDeadline(_ deadline: Deadline, cmd: String, timeout: Double, grace: Double = 0,
                   _ body: @escaping @MainActor () async throws -> String) async throws -> String {
   try await withCheckedThrowingContinuation { (c: CheckedContinuation<String, Error>) in
     var done = false
@@ -432,9 +435,11 @@ func withDeadline(_ deadline: Deadline, cmd: String, timeout: Double,
       do { result = .success(try await body()) } catch { result = .failure(error) }
       if !done { done = true; c.resume(with: result) }
     }
+    var expiredAt: Date?
     @MainActor func check() {
       guard !done else { return }
-      if deadline.expired {
+      if deadline.expired, expiredAt == nil { expiredAt = Date() }
+      if let expiredAt, Date().timeIntervalSince(expiredAt) >= grace {
         done = true
         c.resume(throwing: CLIError("\(cmd) timed out after \(Int(timeout.rounded(.up)))s (raise with --timeout)", code: ExitCode.timeout))
         return

@@ -206,7 +206,7 @@ for (const t of ['mouseover', 'mouseenter', 'mousemove', 'mousedown', 'mouseup',
   document.addEventListener(t, e => log.push({t, trusted: e.isTrusted, detail: e.detail, key: e.key, ctrl: e.ctrlKey, shift: e.shiftKey,
     meta: e.metaKey, alt: e.altKey, inputType: e.inputType, id: e.target.id || e.target.tagName}), true);
 window.hovered = () => document.getElementById('hov').matches(':hover');
-</script>"""))
+</script>""" + ("<script>addEventListener('keydown', () => { const t = Date.now(); while (Date.now() - t < 100); })</script>" if "block" in q else "")))
         # parsed at once, but the load event waits ?s seconds for an image
         if path == "/slow-image":
             return self.send(200, page("Slow image", f'<h1 id=parsed>parsed</h1><img src="/slow?s={q.get("s", 3)}">'))

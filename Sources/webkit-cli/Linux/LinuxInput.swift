@@ -56,12 +56,15 @@ extension Browser {
   /// Waits until the page has received the events sent after `mark` (`sent`: count per type).
   /// WebKit coalesces mouse moves and wheel events, so of those any one will do.
   /// A navigation replaces the world and its counts: the events reached the old page, so that's settled too.
+  /// Gives up once 2s pass with no event arriving (a page that swallows them in the capture phase).
   func inputSettled(sent: [String: Int], since mark: [String: Int]) async {
-    let until = Date().addingTimeInterval(2)
+    var until = Date().addingTimeInterval(2)
+    var last: [String: Int] = [:]
     while Date() < until {
       guard let seen = try? await callJS(countJS) as? [String: Int] else { return }
       if seen["doc"] != mark["doc"] { return } // a new document
       if sent.allSatisfy({ t, n in seen[t, default: 0] - mark[t, default: 0] >= (["mousemove", "wheel"].contains(t) ? 1 : n) }) { return }
+      if seen != last { last = seen; until = Date().addingTimeInterval(2) }
       try? await Task.sleep(nanoseconds: 10_000_000)
     }
   }
