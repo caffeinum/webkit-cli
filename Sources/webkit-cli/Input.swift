@@ -56,7 +56,7 @@ extension Browser {
     }
     for s in steps {
       if sent.values.reduce(0, +) >= inputBatch { await flush() }
-      if sent.isEmpty, stop() { throw CLIError("input stopped: the request timed out", code: ExitCode.timeout) }
+      if sent.isEmpty, stop() { throw CLIError("input stopped: the request timed out or its client hung up", code: ExitCode.timeout) }
       switch s.t {
       case .pause:
         try await Task.sleep(nanoseconds: UInt64(max(0, s.ms ?? 0) * 1e6))

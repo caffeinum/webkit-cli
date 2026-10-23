@@ -59,6 +59,7 @@ final class WebDriverServer {
 
   private func handle(_ fd: Int32) {
     defer { close(fd) }
+    Thread.current.threadDictionary[httpClientKey] = fd
     let reply: (Int, Any)
     do {
       let (method, path, body) = try readHTTP(fd)
@@ -157,7 +158,7 @@ final class WebDriverServer {
     case ("POST", "execute", 2) where rest[1] == "sync" || rest[1] == "async":
       guard let js = body["script"] as? String else { throw WDError(400, "invalid argument", "execute needs {script, args}") }
       let args = body["args"] as? [Any] ?? []
-      return (200, try execute(sid, js, args, async: rest[1] == "async", timeout: ws.script ?? 365 * 86400)) // null = no limit
+      return (200, try execute(sid, js, args, async: rest[1] == "async", timeout: ws.inputTimeout))
     case ("POST", "element", 1), ("POST", "elements", 1):
       guard let using = body["using"] as? String, let value = body["value"] as? String else {
         throw WDError(400, "invalid argument", "find needs {using, value}")
@@ -182,7 +183,7 @@ final class WebDriverServer {
       return (200, NSNull())
     case ("POST", "element", 3) where rest[2] == "value":
       guard let text = body["text"] as? String else { throw WDError(400, "invalid argument", "value needs {text}") }
-      try sendKeys(sid, rest[1], text)
+      try sendKeys(sid, rest[1], text, ws)
       return (200, NSNull())
     case ("GET", "element", 3) where ["text", "name"].contains(rest[2]):
       let js = rest[2] == "text" ? "return elementOf(args[0]).innerText" : "return elementOf(args[0]).tagName.toLowerCase()"
@@ -270,7 +271,7 @@ final class WebDriverServer {
 
   /// Element send keys: real keystrokes after the field's content. WebDriver's modifier keys stay
   /// held for the rest of the text (pressing one again, or Null U+E000, lets go).
-  private func sendKeys(_ sid: String, _ id: String, _ text: String) throws {
+  private func sendKeys(_ sid: String, _ id: String, _ text: String, _ ws: WDSession) throws {
     let selector = try elementSelector(sid, id)
     var held: [String] = []
     var steps: [InputStep] = []
@@ -303,7 +304,7 @@ final class WebDriverServer {
     }
     typePlain()
     release()
-    _ = try call(Request(cmd: "type", target: sid, selector: selector, timeout: timeout, input: steps, append: true))
+    _ = try call(Request(cmd: "type", target: sid, selector: selector, timeout: ws.inputTimeout, input: steps, append: true))
     if steps.contains(where: { $0.key == "Enter" }) {
       // Enter in a form field submits it: let the navigation it starts finish
       usleep(300_000)
@@ -313,7 +314,7 @@ final class WebDriverServer {
 
   /// Sends resolved action steps and keeps the session's input state (held keys, buttons, pointer).
   private func perform(_ sid: String, _ steps: [InputStep], _ updated: WDSession) throws {
-    if !steps.isEmpty { _ = try call(Request(cmd: "input", target: sid, timeout: updated.pageLoad, input: steps)) }
+    if !steps.isEmpty { _ = try call(Request(cmd: "input", target: sid, timeout: updated.inputTimeout, input: steps)) }
     lock.lock(); if sessions[sid] != nil { sessions[sid]?.input = updated.input }; lock.unlock()
     if steps.contains(where: { $0.t == .up || $0.key == "Enter" }) {
       // a click or Enter may have started a navigation: let it finish
@@ -481,8 +482,10 @@ final class WebDriverServer {
 
   // MARK: session process
 
+  /// Sends `r` on behalf of the HTTP client being served on this thread: if that client hangs up,
+  /// the request is dropped (the session process stops its input where it is).
   private func send(_ r: Request) throws -> Response {
-    try SessionClient.send(r, account: account, idle: idle)
+    try SessionClient.send(r, account: account, idle: idle, watch: Thread.current.threadDictionary[httpClientKey] as? Int32)
   }
 
   /// One session request; its JSON output parsed, errors as WebDriver errors.
@@ -507,6 +510,8 @@ final class WebDriverServer {
   }
 }
 
+private let httpClientKey = "webkit-cli.http-client"
+
 /// A WebDriver session's settings; timeouts in seconds (W3C speaks milliseconds).
 struct WDSession {
   /// What the session's virtual keyboard and mouse hold between action calls.
@@ -525,6 +530,9 @@ struct WDSession {
   var pageLoad: Double
   var script: Double? = 30
   var implicit: Double = 0
+
+  /// Scripts, element send keys and actions run under the script timeout (null = no limit).
+  var inputTimeout: Double { script ?? 365 * 86400 }
 
   var timeoutsJSON: [String: Any] {
     ["pageLoad": Int(pageLoad * 1000), "script": script.map { Int($0 * 1000) } ?? NSNull(), "implicit": Int(implicit * 1000)]

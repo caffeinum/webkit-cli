@@ -42,6 +42,8 @@ final class Deadline {
   init(_ seconds: Double) { at = Date().addingTimeInterval(seconds) }
 
   var expired: Bool { pausedAt == nil && Date() > at }
+  /// The client stopped waiting for the answer (hung up).
+  var abandoned: () -> Bool = { false }
   func pause() { if pausedAt == nil { pausedAt = Date() } }
   func resume() {
     guard let p = pausedAt else { return }
@@ -200,14 +202,14 @@ final class Engine {
         let retype = field.removeValue(forKey: "retype") as? String ?? ""
         var steps = typingSteps(retype) + (r.input ?? typingSteps(text))
         if steps.isEmpty && filled && !append { steps = keySteps(["Backspace"]) }
-        try await tab.send(steps, until: { deadline.expired })
+        try await tab.send(steps, until: { deadline.expired || deadline.abandoned() })
       }
       try await settle(tab, r.wait, cap: 0)
       return try jsonString(["tab": id, "typed": field] as [String: Any])
     case "input":
       let (id, tab) = try tab(r.target)
       guard let steps = r.input else { throw CLIError("input needs events", code: ExitCode.usage) }
-      try await tab.send(steps, until: { deadline.expired })
+      try await tab.send(steps, until: { deadline.expired || deadline.abandoned() })
       return try jsonString(["tab": id, "sent": steps.count] as [String: Any])
     case "wait":
       let (id, tab) = try tab(r.target)

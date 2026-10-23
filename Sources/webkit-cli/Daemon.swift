@@ -52,7 +52,8 @@ let defaultIdleSeconds: Double = 15 * 60
 
 enum SessionClient {
   /// Sends one request to the profile's session process, starting it if needed.
-  static func send(_ req: Request, account: String, idle: Double) throws -> Response {
+  /// `watch`: a connection whose peer hanging up abandons the request (the session sees this one close).
+  static func send(_ req: Request, account: String, idle: Double, watch: Int32? = nil) throws -> Response {
     try ensurePrivateDir(SessionPaths.runDir)
     let path = SessionPaths.socket(account)
     var fd = try? connect(path)
@@ -67,7 +68,7 @@ enum SessionClient {
         fd = try? connect(path)
       }
     }
-    return try exchange(fd!, req)
+    return try exchange(fd!, req, watch: watch)
   }
 
   /// Asks a running session to stop; returns false if none was running.
@@ -84,7 +85,7 @@ enum SessionClient {
     return true
   }
 
-  private static func exchange(_ fd: Int32, _ req: Request) throws -> Response {
+  private static func exchange(_ fd: Int32, _ req: Request, watch: Int32? = nil) throws -> Response {
     defer { close(fd) }
     // a human may be working in a shown tab on top of the machine time
     let human = req.escalate == true || req.untilHidden == true ? (req.humanTimeout ?? defaultHumanTimeout) : 0
@@ -118,6 +119,9 @@ enum SessionClient {
             """)
         }
         return resp
+      }
+      if let watch, try !waitReadable(fd, unlessHungUp: watch) {
+        throw CLIError("\(req.cmd) abandoned: its client disconnected")
       }
       guard let chunk = try readChunk(fd) else {
         throw CLIError("session process closed the connection without answering (crashed? see its log)")
@@ -294,6 +298,7 @@ final class SessionServer {
     let resp: Response
     do {
       let deadline = Deadline(req.timeout - Date().timeIntervalSince(call.arrived))
+      deadline.abandoned = { call.clientGone }
       let output = try await withDeadline(deadline, cmd: req.cmd, timeout: req.timeout) {
         try await Engine.$noteSink.withValue({ call.send(note: $0) }) {
           try await self.engine.handle(req, deadline: deadline)
@@ -391,6 +396,26 @@ private final class Call {
     writes.async {
       if let out { try? writeAll(fd, out) }
       close(fd)
+    }
+  }
+}
+
+/// Waits until `fd` is readable; false if `peer` hung up first. A peer that sends more data is no
+/// longer watched (HTTP clients don't pipeline here; it would only spin the poll).
+private func waitReadable(_ fd: Int32, unlessHungUp peer: Int32) throws -> Bool {
+  var watching = true
+  while true {
+    var fds = [pollfd(fd: fd, events: Int16(POLLIN), revents: 0), pollfd(fd: peer, events: Int16(POLLIN), revents: 0)]
+    let n = poll(&fds, watching ? 2 : 1, -1)
+    if n < 0 {
+      if errno == EINTR { continue }
+      throw CLIError("poll failed: \(String(cString: strerror(errno)))")
+    }
+    if fds[0].revents != 0 { return true }
+    if watching, fds[1].revents != 0 {
+      var byte: UInt8 = 0
+      if fds[1].revents & Int16(POLLHUP) != 0 || recv(peer, &byte, 1, Int32(MSG_PEEK)) <= 0 { return false }
+      watching = false
     }
   }
 }
