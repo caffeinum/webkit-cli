@@ -356,7 +356,7 @@ struct WDSession {
   mutating func setTimeouts(_ t: [String: Any]) throws {
     func ms(_ key: String) throws -> Double? {
       guard let v = t[key], !(v is NSNull) else { return nil }
-      guard let n = v as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue >= 0, n.doubleValue.rounded() == n.doubleValue else {
+      guard let n = v as? NSNumber, String(cString: n.objCType) != "c", n.doubleValue >= 0, n.doubleValue.rounded() == n.doubleValue else {
         throw WDError(400, "invalid argument", "timeouts.\(key) must be a whole number of milliseconds ≥ 0")
       }
       return n.doubleValue / 1000
