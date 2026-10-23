@@ -11,6 +11,11 @@ func runWithoutApp(_ command: Command) throws -> Bool {
     let accounts = try Accounts.load()
     let rows = accounts.byName.keys.sorted().map { ["name": $0, "id": accounts.byName[$0]!.uuidString] }
     print(try jsonString(rows))
+  case .create(let account):
+    var accounts = try Accounts.load()
+    guard accounts.byName[account] == nil else { throw CLIError("profile '\(account)' already exists") }
+    let id = try accounts.create(account)
+    print(try jsonString(["created": account, "id": id.uuidString]))
   case .stop(let account):
     try Accounts.validate(account)
     let stopped = try SessionClient.stopIfRunning(account: account)
@@ -46,7 +51,7 @@ func emit(_ result: String, _ opts: Options) throws {
 @MainActor
 func run(_ command: Command, _ opts: Options) async throws {
   switch command {
-  case .help, .version, .accounts, .stop:
+  case .help, .version, .accounts, .create, .stop:
     preconditionFailure("handled by runWithoutApp")
   case .session(_, let request):
     // throwaway profile: no session process, tabs die with this command

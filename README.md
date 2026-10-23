@@ -78,6 +78,7 @@ webkit-cli close <tab>
 webkit-cli stop                         end the profile's session now
 
 webkit-cli accounts                     list saved profiles (JSON)
+webkit-cli create <account>             make an empty profile (no sign-in window)
 webkit-cli forget <account>             delete a profile and all its website data
 webkit-cli doctor                       check that headless pages really render
 

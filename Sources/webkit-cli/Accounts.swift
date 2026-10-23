@@ -34,7 +34,7 @@ struct Accounts {
 
   func id(of name: String) throws -> UUID {
     guard let id = byName[name] else {
-      throw CLIError("no account '\(name)' — create it with: webkit-cli auth <url> --account \(name)")
+      throw CLIError("no account '\(name)' — create it with: webkit-cli create \(name) (empty) or webkit-cli auth <url> --account \(name) (sign in)")
     }
     return id
   }

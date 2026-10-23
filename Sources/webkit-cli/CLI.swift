@@ -1,7 +1,7 @@
 import Foundation
 
 /// Bumped with each release tag (vX.Y.Z).
-let webkitCLIVersion = "0.2.1"
+let webkitCLIVersion = "0.2.2"
 
 let helpText = """
   webkit-cli — drive the system WebKit headless, with persistent logged-in profiles.
@@ -41,6 +41,7 @@ let helpText = """
 
   PROFILES
     webkit-cli accounts                     list saved profiles (JSON)
+    webkit-cli create <account>             make an empty profile (no sign-in window)
     webkit-cli forget <account>             delete a profile and all its website data
     webkit-cli doctor                       check that headless pages really render (visible + rAF)
 
@@ -109,6 +110,7 @@ enum Command {
 
   case help
   case accounts
+  case create(account: String)
   case auth(account: String, url: URL)
   case forget(account: String)
   case doctor
@@ -248,6 +250,9 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
     try need(1, "auth <url> [--account <name>]")
     guard account != "-" else { throw CLIError("auth needs a saved profile — `-` keeps nothing", code: ExitCode.usage) }
     return (.auth(account: account, url: try parseURL(rest[0])), opts)
+  case "create":
+    try need(1, "create <account>")
+    return (.create(account: rest[0]), opts)
   case "forget":
     try need(1, "forget <account>")
     return (.forget(account: rest[0]), opts)
