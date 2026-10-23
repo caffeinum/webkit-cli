@@ -355,23 +355,6 @@ void wk_session_set_cookie(wk_session *s, const char *domain, const char *path, 
   soup_cookie_free(k);
 }
 
-static void cookie_deleted(GObject *source, GAsyncResult *res, gpointer data) {
-  done_call *c = data;
-  GError *error = NULL;
-  webkit_cookie_manager_delete_cookie_finish(WEBKIT_COOKIE_MANAGER(source), res, &error);
-  c->done(c->req, error ? error->message : NULL);
-  if (error) g_error_free(error);
-  g_free(c);
-}
-
-void wk_session_delete_cookie(wk_session *s, const char *domain, const char *path, const char *name, void *req, wk_done done) {
-  SoupCookie *k = soup_cookie_new(name, "", domain, path, -1);
-  done_call *c = g_new0(done_call, 1);
-  c->req = req; c->done = done;
-  webkit_cookie_manager_delete_cookie(webkit_network_session_get_cookie_manager(s->session), k, NULL, cookie_deleted, c);
-  soup_cookie_free(k);
-}
-
 static gboolean main_queue_ready(gint fd, GIOCondition condition, gpointer drain) {
   ((void (*)(void))drain)();
   return G_SOURCE_CONTINUE;

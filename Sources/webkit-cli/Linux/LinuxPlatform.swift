@@ -58,11 +58,12 @@ extension Profile {
     }
   }
 
+  /// WebKit's delete_cookie doesn't match cookies it reports back; an already-expired copy replaces and drops it.
   func deleteCookie(_ k: WireCookie) async throws {
-    guard let domain = k.domain else { throw CLIError("cookie \(k.name) needs a domain") }
-    try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
-      wk_session_delete_cookie(store.handle, domain, k.path ?? "/", k.name, Unmanaged.passRetained(Box(c)).toOpaque(), cookieAdded)
-    }
+    var gone = k
+    gone.value = ""
+    gone.expiry = 0
+    try await setCookie(gone)
   }
 }
 
