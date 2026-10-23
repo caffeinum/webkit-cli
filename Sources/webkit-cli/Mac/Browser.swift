@@ -87,6 +87,9 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     web.uiDelegate = self
     window.contentView = web
     window.delegate = self
+    window.acceptsMouseMovedEvents = true
+    window.makeFirstResponder(web)
+    try requireInputSPI(web)
     if !visible {
       window.orderFrontRegardless()
       try disableOcclusionDetection(web)
@@ -95,13 +98,13 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
 
   private static func makeWindow(visible: Bool, title: String) -> NSWindow {
     if visible {
-      let w = NSWindow(contentRect: NSRect(origin: .zero, size: viewport),
+      let w = TabWindow(contentRect: NSRect(origin: .zero, size: viewport),
                        styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
       w.title = title
       w.isReleasedWhenClosed = false
       return w
     }
-    let w = NSWindow(contentRect: NSRect(origin: NSPoint(x: -20000, y: -20000), size: viewport),
+    let w = TabWindow(contentRect: NSRect(origin: NSPoint(x: -20000, y: -20000), size: viewport),
                      styleMask: [.borderless], backing: .buffered, defer: false)
     w.isReleasedWhenClosed = false
     makeHeadless(w)
@@ -314,15 +317,18 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
 
   /// Runs `body` as the body of an async function in the page's world; returns its JSON-encoded result,
   /// or nil when the function returned undefined.
-  func evalJSON(_ body: String) async throws -> String? {
+  func evalJSON(_ body: String, page: Bool = true) async throws -> String? {
     let wrapped = """
       const __webkitCliResult = await (async () => {
       \(body)
       })();
       return __webkitCliResult === undefined ? undefined : JSON.stringify(__webkitCliResult);
       """
-    return try await callJS(wrapped) as? String
+    return try await callJS(wrapped, page: page) as? String
   }
+
+  /// webkit-cli's own scripts run here, out of the page's sight; only `eval` and WebDriver `execute` run in the page's world.
+  private static let isolatedWorld = WKContentWorld.world(name: "webkit-cli")
 
   private static let navigatedAway = CLIError("""
     the page navigated away before the script finished. Split steps that change page: \
@@ -336,13 +342,13 @@ final class Browser: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
 
   private var runningJS: [UUID: CheckedContinuation<Any?, Error>] = [:]
 
-  func callJS(_ body: String, _ args: [String: Any] = [:]) async throws -> Any? {
+  func callJS(_ body: String, _ args: [String: Any] = [:], page: Bool = false) async throws -> Any? {
     // a closed web view may never call back
     guard !isClosed else { throw CLIError("tab was closed (the page closed itself, or `close`)") }
     return try await withCheckedThrowingContinuation { (c: CheckedContinuation<Any?, Error>) in
       let id = UUID()
       runningJS[id] = c
-      web.callAsyncJavaScript(body, arguments: args, in: nil, in: .page) { [weak self] result in
+      web.callAsyncJavaScript(body, arguments: args, in: nil, in: page ? .page : Browser.isolatedWorld) { [weak self] result in
         guard let c = self?.runningJS.removeValue(forKey: id) else { return }
         switch result {
         case .success(let value):

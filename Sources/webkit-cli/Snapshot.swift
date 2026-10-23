@@ -1,7 +1,7 @@
 import Foundation
 
 /// `snapshot`: what an agent can see and act on, one element per line, each actionable element
-/// stamped with a ref (data-wk-ref="e<n>") that `click`/`type`/`wait` accept in place of a selector.
+/// given a ref ("e<n>") that `click`/`type`/`wait` accept in place of a selector.
 /// Refs stick to their element across snapshots and are never reused within a tab (the counter
 /// lives in the tab, so it survives navigations).
 ///
@@ -9,9 +9,23 @@ import Foundation
 /// are masked in the page itself, hashed with an in-page SHA-256, so they never cross into this
 /// process. Password inputs are never read, with or without --redact.
 
-/// Finds an element by CSS selector, `text=<words>`, or a snapshot ref (`e7` / `ref=e7`), looking
-/// through same-origin iframes and open shadow roots for refs. Shared by snapshot/click/type/wait.
-let findJS = """
+/// Element handles (snapshot refs, WebDriver ids) live in webkit-cli's isolated JS world, never in
+/// the DOM: the page can't see them, and a navigation (a new world global) makes them all stale.
+/// Elements cross into the page's world as node paths (child indexes; 's' enters an open shadow
+/// root, 'f' a same-origin iframe).
+let handlesJS = """
+  const H = window.__wkH || (window.__wkH = {byId: new Map(), ref: new WeakMap(), wd: new WeakMap()});
+  const live = id => { const r = H.byId.get(id), el = r && r.deref(); return el && el.isConnected ? el : null; };
+  const stamp = (el, kind, make) => {
+    let id = H[kind].get(el);
+    if (!id) { id = make(); H[kind].set(el, id); H.byId.set(id, new WeakRef(el)); }
+    return id;
+  };
+  """
+
+/// Finds an element by CSS selector, `text=<words>`, a snapshot ref (`e7` / `ref=e7`) or a WebDriver
+/// handle (`wd=<id>`). Shared by snapshot/click/type/wait; runs in the isolated world.
+let findJS = handlesJS + """
   const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length) &&
     getComputedStyle(el).visibility !== 'hidden';
   const norm = s => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
@@ -34,24 +48,17 @@ let findJS = """
   )].filter(el => visible(el) && !el.closest('[aria-hidden="true"]'));
   const clickables = () => candidates().filter(el => !blocked(el));
   const refOf = sel => { const m = /^(?:ref=)?(e[0-9]+)$/.exec(sel.trim()); return m ? m[1] : null; };
-  const deepRef = (root, ref) => {
-    const hit = root.querySelector('[data-wk-ref="' + ref + '"]');
-    if (hit) return hit;
-    for (const el of root.querySelectorAll('*')) {
-      if (el.shadowRoot) { const h = deepRef(el.shadowRoot, ref); if (h) return h; }
-      if (el.tagName === 'IFRAME') {
-        let doc = null;
-        try { doc = el.contentDocument; } catch (e) {}
-        if (doc) { const h = deepRef(doc, ref); if (h) return h; }
-      }
-    }
-    return null;
-  };
   const find = sel => {
     const ref = refOf(sel);
     if (ref) {
-      const el = deepRef(document, ref);
-      if (!el || !el.isConnected) throw new Error('WKCLI: stale ref ' + ref + ': page changed since the snapshot — take a new one');
+      const el = live(ref);
+      if (!el) throw new Error('WKCLI: stale ref ' + ref + ': page changed since the snapshot — take a new one');
+      return el;
+    }
+    const wd = /^wd=(w[0-9a-z]+)$/.exec(sel.trim());
+    if (wd) {
+      const el = live(wd[1]);
+      if (!el) throw new Error('WKCLI-STALE');
       return el;
     }
     if (!sel.startsWith('text=')) return document.querySelector(sel);
@@ -74,7 +81,7 @@ let findJS = """
 
 /// Arguments: startRef (Int), redactOn (Bool), maxChars (Int), asJSON (Bool), interactive (Bool: actions only).
 /// Returns {output, nextRef, truncated}.
-let snapshotJS = #"""
+let snapshotJS = handlesJS + #"""
   // --- SHA-256, so a masked secret can be told apart from another without leaving the page
   const sha256hex = (str) => {
     const K = [0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
@@ -184,9 +191,8 @@ let snapshotJS = #"""
   // --- refs: keep the element's ref, else hand out the next never-used number
   let nextRef = startRef;
   const refFor = (el) => {
-    let r = el.getAttribute('data-wk-ref');
-    if (!r) { r = 'e' + (nextRef++); el.setAttribute('data-wk-ref', r); }
-    else { const n = parseInt(r.slice(1), 10); if (n >= nextRef) nextRef = n + 1; }
+    const r = stamp(el, 'ref', () => 'e' + (nextRef++));
+    const n = parseInt(r.slice(1), 10); if (n >= nextRef) nextRef = n + 1;
     return r;
   };
 

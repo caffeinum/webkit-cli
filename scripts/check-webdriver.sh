@@ -147,6 +147,44 @@ check(req("POST", f"{S2}/timeouts", {"implicit": -1}, expect=400)["error"] == "i
 req("DELETE", S2)
 ok("timeouts: pageLoad, script, implicit")
 
+# trusted input: real platform events, so hover, double clicks, held modifiers and wheel work as a person's
+s2 = req("POST", "/session", {"capabilities": {}})
+S2 = f"/session/{s2['sessionId']}"
+def js(code): return req("POST", f"{S2}/execute/sync", {"script": code, "args": []})
+def act(*sources): req("POST", f"{S2}/actions", {"actions": list(sources)})
+mouse = lambda *a: {"type": "pointer", "id": "m", "parameters": {"pointerType": "mouse"}, "actions": list(a)}
+keys = lambda *a: {"type": "key", "id": "k", "actions": list(a)}
+req("POST", f"{S2}/url", {"url": f"{APP}/input"})
+hov = req("POST", f"{S2}/element", {"using": "css selector", "value": "#hov"})[E]
+act(mouse({"type": "pointerMove", "origin": {E: hov}, "x": 0, "y": 0, "duration": 100}))
+check(js("return hovered()"), "pointerMove hovers (:hover)")
+check(any(e["t"] == "mouseover" for e in js("return log")), "pointerMove fires mouseover")
+act(mouse({"type": "pointerDown", "button": 0}, {"type": "pointerUp", "button": 0}, {"type": "pointerDown", "button": 0}, {"type": "pointerUp", "button": 0}))
+dbl = [e for e in js("return log") if e["t"] == "dblclick"]
+check(len(dbl) == 1 and dbl[0]["detail"] == 2, f"double click: {dbl}")
+field = req("POST", f"{S2}/element", {"using": "css selector", "value": "#field"})[E]
+req("POST", f"{S2}/element/{field}/click", {})
+act(keys({"type": "keyDown", "value": "\ue009"}, {"type": "keyDown", "value": "a"}, {"type": "keyUp", "value": "a"}, {"type": "keyUp", "value": "\ue009"}))
+ka = [e for e in js("return log") if e["t"] == "keydown" and e["key"] == "a"]
+check(ka and ka[-1]["ctrl"], f"Control held through key actions: {ka}")
+req("POST", f"{S2}/element/{field}/clear", {})
+req("POST", f"{S2}/element/{field}/value", {"text": "ab\ue008cd\ue000e1"})
+check(js("return field.value") == "abCDe1", "send keys: Shift held until Null")
+act({"type": "wheel", "id": "w", "actions": [{"type": "scroll", "x": 100, "y": 100, "deltaX": 0, "deltaY": 400}]})
+for _ in range(20):
+    if js("return scrollY") > 0: break
+    time.sleep(0.05)
+check(js("return scrollY") > 0, "wheel scrolls the page")
+check(js("return document.querySelector('[data-wd], [data-wk-ref]') === null && !document.documentElement.outerHTML.includes('data-wd')"), "element handles leave no trace in the DOM")
+same = req("POST", f"{S2}/element", {"using": "css selector", "value": "#hov"})[E]
+check(same == hov, "the same element keeps its handle")
+check(req("POST", f"{S2}/execute/sync", {"script": "return [arguments[0].id, document.getElementById('field')]", "args": [{E: hov}]}) == ["hov", {E: field}], "elements cross into execute and back")
+untrusted = [e for e in js("return log") if not e["trusted"]]
+check(not untrusted, f"every input event is trusted: {untrusted[:5]}")
+check(req("POST", f"{S2}/element/{req('POST', f'{S2}/element', {'using': 'css selector', 'value': '#covered'})[E]}/click", {}, expect=400)["error"] == "element click intercepted", "covered element")
+req("DELETE", S2)
+ok("trusted input: hover, double click, held modifiers, send keys, wheel, click intercepted")
+
 # the session socket refuses a client of another protocol version, with what to do about it
 sock = socket.socket(socket.AF_UNIX); sock.connect(os.path.expanduser(f"~/.config/webkit-cli/run/{profile}.sock"))
 sock.sendall(json.dumps({"v": 1, "cmd": "tabs", "timeout": 5}).encode() + b"\n")

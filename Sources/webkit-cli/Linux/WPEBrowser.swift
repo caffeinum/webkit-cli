@@ -18,7 +18,7 @@ final class WebStore {
 /// Engine, daemon and snapshot code don't know which backend runs them.
 @MainActor
 final class Browser {
-  private var tab: OpaquePointer?
+  private(set) var tab: OpaquePointer?
   private(set) var lastStatus: Int?
   /// False from the start of a navigation until its document replaces the old one.
   private(set) var committed = true
@@ -30,7 +30,7 @@ final class Browser {
   let visible: Bool
   /// While shown: the visible window a person works in. The page can't move between displays on
   /// Linux, so it's a second view on the same profile; commands on this tab act on it until `hide`.
-  private var presented: Browser?
+  private(set) var presented: Browser?
   var isShown: Bool { presented != nil }
   /// Called when a person closes a visible window.
   var onWindowClosed: (() -> Void)?
@@ -64,6 +64,7 @@ final class Browser {
     var callbacks = wk_callbacks(load: onLoad, status: onStatus, closed: onClosed, crashed: onCrashed, popup: onPopupCreated,
                                  window_closed: onWindowClosedCallback)
     wk_tab_set_ctx(tab, Unmanaged.passUnretained(self).toOpaque(), &callbacks)
+    wk_tab_add_world_script(tab, isolatedWorld, inputWorldScript)
   }
 
   var url: URL? { presented?.url ?? ownURL ?? closedURL }
@@ -231,20 +232,22 @@ final class Browser {
     """)
 
   /// Runs `body` as the body of an async function; returns its JSON-encoded result, or nil for undefined.
-  func evalJSON(_ body: String) async throws -> String? {
+  func evalJSON(_ body: String, page: Bool = true) async throws -> String? {
     let wrapped = """
       const __webkitCliResult = await (async () => {
       \(body)
       })();
       return __webkitCliResult === undefined ? undefined : JSON.stringify(__webkitCliResult);
       """
-    return try await callJS(wrapped) as? String
+    return try await callJS(wrapped, page: page) as? String
   }
 
   /// `args` become constants of the same names inside `body` (passed as one JSON string: the C API
   /// takes a GVariant dictionary, and a single string keeps that simple).
-  func callJS(_ body: String, _ args: [String: Any] = [:]) async throws -> Any? {
-    if let presented { return try await presented.callJS(body, args) }
+  /// webkit-cli's own scripts run in an isolated world, out of the page's sight; only `eval` and
+  /// WebDriver `execute` run in the page's world.
+  func callJS(_ body: String, _ args: [String: Any] = [:], page: Bool = false) async throws -> Any? {
+    if let presented { return try await presented.callJS(body, args, page: page) }
     guard let tab else { throw CLIError("tab was closed (the page closed itself, or `close`)") }
     let argsJSON = try jsonString(args)
     let prelude = args.keys.sorted().map { "const \($0) = __wkArgs[\(try! jsonString($0))];" }.joined(separator: "\n")
@@ -253,7 +256,7 @@ final class Browser {
       let call = JSCall(c)
       runningJS[ObjectIdentifier(call)] = call
       call.onFinish = { [weak self] in self?.runningJS[ObjectIdentifier(call)] = nil }
-      wk_tab_call_js(tab, source, "__wkArgs", argsJSON, Unmanaged.passRetained(call).toOpaque(), jsDone)
+      wk_tab_call_js(tab, source, "__wkArgs", argsJSON, page ? nil : isolatedWorld, Unmanaged.passRetained(call).toOpaque(), jsDone)
     }
     guard let json else { return nil }
     return try JSONSerialization.jsonObject(with: Data(json.utf8), options: .fragmentsAllowed)

@@ -203,13 +203,62 @@ static void js_finished(GObject *source, GAsyncResult *res, gpointer data) {
   g_free(c);
 }
 
-void wk_tab_call_js(wk_tab *t, const char *body, const char *args_name, const char *args_json, void *req, wk_js_done done) {
+void wk_tab_call_js(wk_tab *t, const char *body, const char *args_name, const char *args_json, const char *world,
+                    void *req, wk_js_done done) {
   GVariantBuilder b;
   g_variant_builder_init(&b, G_VARIANT_TYPE("a{sv}"));
   g_variant_builder_add(&b, "{sv}", args_name, g_variant_new_string(args_json));
   js_call *c = g_new0(js_call, 1);
   c->req = req; c->done = done;
-  webkit_web_view_call_async_javascript_function(t->view, body, -1, g_variant_builder_end(&b), NULL, NULL, NULL, js_finished, c);
+  webkit_web_view_call_async_javascript_function(t->view, body, -1, g_variant_builder_end(&b), world, NULL, NULL, js_finished, c);
+}
+
+void wk_tab_add_world_script(wk_tab *t, const char *world, const char *source) {
+  WebKitUserScript *script = webkit_user_script_new_for_world(source, WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
+                                                               WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, world, NULL, NULL);
+  webkit_user_content_manager_add_script(webkit_web_view_get_user_content_manager(t->view), script);
+  webkit_user_script_unref(script);
+}
+
+// --- input
+
+static guint32 now_ms(void) { return (guint32)(g_get_monotonic_time() / 1000); }
+
+void wk_tab_pointer(wk_tab *t, int kind, double x, double y, unsigned button, unsigned clicks, unsigned mods) {
+  WPEView *v = webkit_web_view_get_wpe_view(t->view);
+  if (!v) return;
+  WPEEvent *e = kind == 0
+    ? wpe_event_pointer_move_new(WPE_EVENT_POINTER_MOVE, v, WPE_INPUT_SOURCE_MOUSE, now_ms(), mods, x, y, 0, 0)
+    : wpe_event_pointer_button_new(kind == 1 ? WPE_EVENT_POINTER_DOWN : WPE_EVENT_POINTER_UP, v, WPE_INPUT_SOURCE_MOUSE,
+                                   now_ms(), mods, button, x, y, kind == 1 ? clicks : 0); // WPE: a release has no count
+  if (!e) return;
+  wpe_view_event(v, e);
+  wpe_event_unref(e);
+}
+
+void wk_tab_scroll(wk_tab *t, double x, double y, double dx, double dy, unsigned mods) {
+  WPEView *v = webkit_web_view_get_wpe_view(t->view);
+  if (!v) return;
+  WPEEvent *e = wpe_event_scroll_new(v, WPE_INPUT_SOURCE_MOUSE, now_ms(), mods, dx, dy, TRUE, FALSE, x, y);
+  if (!e) return;
+  wpe_view_event(v, e);
+  wpe_event_unref(e);
+}
+
+void wk_tab_key(wk_tab *t, int down, unsigned keyval, unsigned mods) {
+  WPEView *v = webkit_web_view_get_wpe_view(t->view);
+  if (!v) return;
+  guint keycode = 0;
+  WPEKeymap *keymap = wpe_display_get_keymap(wpe_view_get_display(v));
+  WPEKeymapEntry *entries = NULL;
+  guint n = 0;
+  if (keymap && wpe_keymap_get_entries_for_keyval(keymap, keyval, &entries, &n) && n > 0) keycode = entries[0].keycode;
+  g_free(entries);
+  WPEEvent *e = wpe_event_keyboard_new(down ? WPE_EVENT_KEYBOARD_KEY_DOWN : WPE_EVENT_KEYBOARD_KEY_UP, v,
+                                       WPE_INPUT_SOURCE_KEYBOARD, now_ms(), mods, keycode, keyval);
+  if (!e) return;
+  wpe_view_event(v, e);
+  wpe_event_unref(e);
 }
 
 // --- snapshots

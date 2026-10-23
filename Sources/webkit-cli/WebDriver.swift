@@ -164,10 +164,10 @@ final class WebDriverServer {
       }
       // implicit wait: keep looking until something matches or it runs out
       let until = Date().addingTimeInterval(ws.implicit)
-      var found = try execute(sid, findElementsJS, [using, value, rest[0] == "element"], async: false)
+      var found = try isolated(sid, findElementsJS, [using, value, rest[0] == "element"])
       while (found as? [Any])?.isEmpty ?? false, Date() < until {
         usleep(100_000)
-        found = try execute(sid, findElementsJS, [using, value, rest[0] == "element"], async: false)
+        found = try isolated(sid, findElementsJS, [using, value, rest[0] == "element"])
       }
       if rest[0] == "elements" { return (200, found) }
       guard let list = found as? [Any], let first = list.first else {
@@ -185,11 +185,11 @@ final class WebDriverServer {
       try sendKeys(sid, rest[1], text)
       return (200, NSNull())
     case ("GET", "element", 3) where ["text", "name"].contains(rest[2]):
-      let js = rest[2] == "text" ? "return arguments[0].innerText" : "return arguments[0].tagName.toLowerCase()"
-      return (200, try execute(sid, js, [elementRef(rest[1])], async: false))
+      let js = rest[2] == "text" ? "return elementOf(args[0]).innerText" : "return elementOf(args[0]).tagName.toLowerCase()"
+      return (200, try isolated(sid, js, [elementRef(rest[1])]))
     case ("GET", "element", 4) where rest[2] == "attribute" || rest[2] == "property":
-      let js = rest[2] == "attribute" ? "return arguments[0].getAttribute(arguments[1])" : "return arguments[0][arguments[1]]"
-      return (200, try execute(sid, js, [elementRef(rest[1]), rest[3]], async: false))
+      let js = rest[2] == "attribute" ? "return elementOf(args[0]).getAttribute(args[1])" : "return ser(elementOf(args[0])[args[1]])"
+      return (200, try isolated(sid, js, [elementRef(rest[1]), rest[3]]))
     case ("GET", "screenshot", 1):
       return (200, try screenshot(sid))
     case ("GET", "cookie", 1):
@@ -211,10 +211,14 @@ final class WebDriverServer {
       return (200, NSNull())
     case ("POST", "actions", 1):
       guard let actions = body["actions"] as? [Any] else { throw WDError(400, "invalid argument", "actions needs {actions: [...]}") }
-      _ = try execute(sid, actionsJS, [actions], async: false)
-      _ = try call(Request(cmd: "wait", target: sid, timeout: timeout))
+      var updated = ws
+      let steps = try actionSteps(sid, actions, &updated)
+      try perform(sid, steps, updated)
       return (200, NSNull())
     case ("DELETE", "actions", 1):
+      var updated = ws
+      let steps = updated.releaseAll()
+      try perform(sid, steps, updated)
       return (200, NSNull())
     case ("GET", "window", 1):
       return (200, sid)
@@ -258,27 +262,157 @@ final class WebDriverServer {
 
   private func elementRef(_ id: String) -> [String: Any] { [elementKey: id] }
 
-  /// A CSS selector for a found element; a stale element (gone, or the page navigated) fails here.
+  /// The selector click/type resolve a WebDriver handle by (a stale one fails there).
   private func elementSelector(_ sid: String, _ id: String) throws -> String {
-    guard id.allSatisfy({ $0.isLetter || $0.isNumber }) else { throw WDError(404, "no such element", "bad element id \(id)") }
-    _ = try execute(sid, "return arguments[0] === null ? 0 : 1", [elementRef(id)], async: false)
-    return "[data-wd=\"\(id)\"]"
+    guard id.hasPrefix("w"), id.allSatisfy({ $0.isLetter || $0.isNumber }) else { throw WDError(404, "no such element", "bad element id \(id)") }
+    return "wd=\(id)"
   }
 
+  /// Element send keys: real keystrokes after the field's content. WebDriver's modifier keys stay
+  /// held for the rest of the text (pressing one again, or Null U+E000, lets go).
   private func sendKeys(_ sid: String, _ id: String, _ text: String) throws {
     let selector = try elementSelector(sid, id)
-    let enter = text.unicodeScalars.contains { $0 == "\u{E007}" || $0 == "\u{E006}" }
-    // WebDriver's special keys live in U+E000–U+F8FF; only Enter is acted on, the rest are dropped
-    let typed = String(String.UnicodeScalarView(text.unicodeScalars.filter { !(0xE000...0xF8FF).contains($0.value) }))
-    if !typed.isEmpty {
-      let current = try execute(sid, "const e = arguments[0]; return e.isContentEditable ? e.textContent : (e.value ?? '')",
-                                [elementRef(id)], async: false) as? String ?? ""
-      _ = try call(Request(cmd: "type", target: sid, selector: selector, text: current + typed, timeout: timeout))
+    var held: [String] = []
+    var steps: [InputStep] = []
+    let mods = { KeyModifiers(held.compactMap(KeyModifiers.init(key:))) }
+    let release = {
+      for k in held.reversed() { held.removeLast(); steps.append(InputStep(t: .key, key: k, down: false, mods: mods().rawValue)) }
     }
-    if enter {
-      _ = try execute(sid, pressEnterJS, [elementRef(id)], async: false)
+    for scalar in text.unicodeScalars {
+      if scalar.value == 0xE000 { release(); continue }
+      if (0xE000...0xF8FF).contains(scalar.value) && webDriverKeyName(scalar) == nil {
+        throw WDError(400, "invalid argument", "unknown WebDriver key U+\(String(scalar.value, radix: 16, uppercase: true))")
+      }
+      let key = webDriverKeyName(scalar) ?? String(scalar)
+      if KeyModifiers(key: key) != nil {
+        if let i = held.firstIndex(of: key) {
+          held.remove(at: i)
+          steps.append(InputStep(t: .key, key: key, down: false, mods: mods().rawValue))
+        } else {
+          steps.append(InputStep(t: .key, key: key, down: true, mods: mods().rawValue))
+          held.append(key)
+        }
+        continue
+      }
+      steps.append(InputStep(t: .key, key: key, down: true, mods: mods().rawValue))
+      steps.append(InputStep(t: .key, key: key, down: false, mods: mods().rawValue))
+    }
+    release()
+    _ = try call(Request(cmd: "type", target: sid, selector: selector, timeout: timeout, input: steps, append: true))
+    if steps.contains(where: { $0.key == "Enter" }) {
+      // Enter in a form field submits it: let the navigation it starts finish
       usleep(300_000)
       _ = try call(Request(cmd: "wait", target: sid, timeout: timeout))
+    }
+  }
+
+  /// Sends resolved action steps and keeps the session's input state (held keys, buttons, pointer).
+  private func perform(_ sid: String, _ steps: [InputStep], _ updated: WDSession) throws {
+    if !steps.isEmpty { _ = try call(Request(cmd: "input", target: sid, timeout: updated.pageLoad, input: steps)) }
+    lock.lock(); if sessions[sid] != nil { sessions[sid]?.input = updated.input }; lock.unlock()
+    if steps.contains(where: { $0.t == .up || $0.key == "Enter" }) {
+      // a click or Enter may have started a navigation: let it finish
+      _ = try call(Request(cmd: "wait", target: sid, timeout: updated.pageLoad))
+    }
+  }
+
+  /// W3C actions → input steps, tick by tick: each source's nth action runs in tick n, and a tick
+  /// lasts as long as its longest pause or pointer move.
+  private func actionSteps(_ sid: String, _ sources: [Any], _ ws: inout WDSession) throws -> [InputStep] {
+    var lists: [(type: String, actions: [[String: Any]])] = []
+    for case let src as [String: Any] in sources {
+      guard let type = src["type"] as? String, ["key", "pointer", "wheel", "none"].contains(type),
+            let actions = src["actions"] as? [[String: Any]] else {
+        throw WDError(400, "invalid argument", "each action source needs {type: key|pointer|wheel|none, actions: [...]}")
+      }
+      if type == "pointer", let p = src["parameters"] as? [String: Any], let pt = p["pointerType"] as? String, pt != "mouse" {
+        throw WDError(400, "invalid argument", "pointerType \(pt) isn't supported (mouse is)")
+      }
+      lists.append((type, actions))
+    }
+    var steps: [InputStep] = []
+    var clock = 0.0 // ms since these actions began, for telling a double click from two clicks
+    let ticks = lists.map(\.actions.count).max() ?? 0
+    for t in 0..<ticks {
+      var tickMs = 0.0
+      var movedMs = 0.0
+      for (type, actions) in lists where t < actions.count {
+        let a = actions[t]
+        guard let kind = a["type"] as? String else { throw WDError(400, "invalid argument", "an action needs a type") }
+        let duration = (a["duration"] as? NSNumber)?.doubleValue ?? 0
+        switch (type, kind) {
+        case (_, "pause"):
+          tickMs = max(tickMs, duration)
+        case ("key", "keyDown"), ("key", "keyUp"):
+          let key = try actionKey(a["value"])
+          let down = kind == "keyDown"
+          steps.append(InputStep(t: .key, key: key, down: down, mods: ws.input.modifiers.rawValue))
+          if down { ws.input.keys.append(key) } else if let i = ws.input.keys.lastIndex(of: key) { ws.input.keys.remove(at: i) }
+        case ("pointer", "pointerMove"):
+          let (x, y) = try target(sid, a, ws.input)
+          let n = duration > 0 ? max(1, Int(duration / 16)) : 1
+          for i in 1...n {
+            let f = Double(i) / Double(n)
+            steps.append(InputStep(t: .move, x: ws.input.x + (x - ws.input.x) * f, y: ws.input.y + (y - ws.input.y) * f,
+                                   mods: ws.input.modifiers.rawValue, buttons: ws.input.buttons))
+            if duration > 0 { steps.append(InputStep(t: .pause, ms: duration / Double(n))) }
+          }
+          movedMs = max(movedMs, duration)
+          tickMs = max(tickMs, duration)
+          ws.input.x = x; ws.input.y = y
+        case ("pointer", "pointerDown"), ("pointer", "pointerUp"):
+          let button = (a["button"] as? NSNumber)?.intValue ?? 0
+          guard (0...2).contains(button) else { throw WDError(400, "invalid argument", "button must be 0, 1 or 2") }
+          let s = ws.input
+          if kind == "pointerDown" {
+            let again = s.lastUp.map { clock - $0.at < 500 && $0.button == button && abs($0.x - s.x) <= 4 && abs($0.y - s.y) <= 4 } ?? false
+            ws.input.clicks = again ? (s.lastUp?.count ?? 0) + 1 : 1
+            ws.input.buttons |= 1 << button
+          } else {
+            ws.input.buttons &= ~(1 << button)
+            ws.input.lastUp = (clock, s.x, s.y, button, s.clicks)
+          }
+          steps.append(InputStep(t: kind == "pointerDown" ? .down : .up, x: s.x, y: s.y, button: button, clicks: ws.input.clicks,
+                                 mods: ws.input.modifiers.rawValue))
+        case ("wheel", "scroll"):
+          let (x, y) = try target(sid, a, ws.input)
+          steps.append(InputStep(t: .wheel, x: x, y: y, dx: (a["deltaX"] as? NSNumber)?.doubleValue ?? 0,
+                                 dy: (a["deltaY"] as? NSNumber)?.doubleValue ?? 0, mods: ws.input.modifiers.rawValue))
+        default:
+          throw WDError(400, "invalid argument", "\(type) source can't \(kind)")
+        }
+      }
+      if tickMs > movedMs { steps.append(InputStep(t: .pause, ms: tickMs - movedMs)) }
+      clock += tickMs
+    }
+    return steps
+  }
+
+  private func actionKey(_ v: Any?) throws -> String {
+    guard let s = v as? String, s.count == 1 else { throw WDError(400, "invalid argument", "a key action's value must be one character") }
+    if let scalar = s.unicodeScalars.first, s.unicodeScalars.count == 1, (0xE000...0xF8FF).contains(scalar.value) {
+      guard let name = webDriverKeyName(scalar) else {
+        throw WDError(400, "invalid argument", "unknown WebDriver key U+\(String(scalar.value, radix: 16, uppercase: true))")
+      }
+      return name
+    }
+    return s
+  }
+
+  /// A pointer move's or scroll's target in viewport px: relative to the viewport, the pointer, or an element's centre.
+  private func target(_ sid: String, _ a: [String: Any], _ input: WDSession.Input) throws -> (Double, Double) {
+    let dx = (a["x"] as? NSNumber)?.doubleValue ?? 0, dy = (a["y"] as? NSNumber)?.doubleValue ?? 0
+    switch a["origin"] {
+    case nil, "viewport" as String: return (dx, dy)
+    case "pointer" as String: return (input.x + dx, input.y + dy)
+    case let el as [String: Any] where el[elementKey] is String:
+      let c = try isolated(sid, centerJS, [el]) as? [String: Any]
+      guard let cx = (c?["x"] as? NSNumber)?.doubleValue, let cy = (c?["y"] as? NSNumber)?.doubleValue else {
+        throw WDError(500, "unknown error", "could not locate the origin element")
+      }
+      return (cx + dx, cy + dy)
+    default:
+      throw WDError(400, "invalid argument", "origin must be viewport, pointer or an element")
     }
   }
 
@@ -300,15 +434,39 @@ final class WebDriverServer {
     try execute(sid, js, [], async: false)
   }
 
-  /// Runs a WebDriver script (a function body, args as `arguments`); elements cross as {element-…: id}.
+  /// Runs `js` (a function body over `args`) in webkit-cli's isolated world, where element handles live.
+  private func isolated(_ sid: String, _ js: String, _ args: [Any]) throws -> Any {
+    let body = wdHandlesJS + "const args = \(try jsonText(args));\n" + js
+    do {
+      return try call(Request(cmd: "eval", target: sid, js: body, timeout: timeout, isolated: true))
+    } catch let e as WDError where e.message.contains("WKCLI-STALE") {
+      throw WDError(404, "stale element reference", "the element is no longer on the page (it changed or navigated)")
+    }
+  }
+
+  /// Runs a WebDriver script (a function body, args as `arguments`) in the page's world. Element
+  /// handles cross between the worlds as node paths: resolved before, and re-handled after.
   private func execute(_ sid: String, _ js: String, _ args: [Any], async: Bool, timeout script: Double? = nil) throws -> Any {
-    let argsJSON = String(decoding: try JSONSerialization.data(withJSONObject: args, options: [.fragmentsAllowed]), as: UTF8.self)
+    var argsValue: Any = args
+    if try jsonText(args).contains(elementKey) {
+      argsValue = try isolated(sid, "return mapDeep(args[0], v => E in v ? {__wkPath: pathOf(elementOf(v))} : undefined)", [args])
+    }
+    let argsJSON = try jsonText(argsValue)
     let body = async
       ? "return await new Promise((resolve, reject) => { (function() { \(js) }).apply(null, [...un(\(argsJSON)), resolve]); })"
       : "return await (async function() { \(js) }).apply(null, un(\(argsJSON)))"
     let wrapped = executeJS.replacingOccurrences(of: "/*BODY*/", with: "return ser(await (async () => { \(body) })());")
     do {
-      return try call(Request(cmd: "eval", target: sid, js: wrapped, timeout: script ?? timeout))
+      let out = try call(Request(cmd: "eval", target: sid, js: wrapped, timeout: script ?? timeout))
+      guard try jsonText(out).contains("__wkPath") else { return out }
+      return try isolated(sid, """
+        return mapDeep(args[0], v => {
+          if (!('__wkPath' in v)) return undefined;
+          const el = nodeAt(v.__wkPath);
+          if (!el) throw new Error('WKCLI: the script returned an element webkit-cli can not reach (in a closed shadow root?)');
+          return handleOf(el);
+        })
+        """, [out])
     } catch let e as WDError where e.message.contains("WKCLI-STALE") {
       throw WDError(404, "stale element reference", "the element is no longer on the page (it changed or navigated)")
     } catch let e as WDError where e.code == "timeout" && script != nil {
@@ -328,9 +486,11 @@ final class WebDriverServer {
     guard resp.ok else {
       let msg = resp.error ?? "\(r.cmd) failed"
       switch true {
+      case msg.contains("WKCLI-STALE"): throw WDError(404, "stale element reference", "the element is no longer on the page (it changed or navigated)")
       case resp.code == ExitCode.timeout: throw WDError(500, "timeout", msg)
       case msg.contains("stale ref") || msg.contains("no element matches"): throw WDError(404, "stale element reference", msg)
-      case msg.contains("could not reach"): throw WDError(400, "element not interactable", msg)
+      case msg.contains("could not reach") || msg.contains("has no size"): throw WDError(400, "element not interactable", msg)
+      case msg.contains("is covered by"): throw WDError(400, "element click intercepted", msg)
       case msg.contains("not an input"): throw WDError(400, "invalid element state", msg)
       case msg.contains("no tab"): throw WDError(404, "no such window", msg)
       case r.cmd == "eval": throw WDError(500, "javascript error", msg)
@@ -344,6 +504,18 @@ final class WebDriverServer {
 
 /// A WebDriver session's settings; timeouts in seconds (W3C speaks milliseconds).
 struct WDSession {
+  /// What the session's virtual keyboard and mouse hold between action calls.
+  struct Input {
+    var x = 0.0
+    var y = 0.0
+    var buttons = 0                 // bit 1 << button
+    var clicks = 1                  // the press count of the button now down
+    var keys: [String] = []         // held keys, in press order
+    var lastUp: (at: Double, x: Double, y: Double, button: Int, count: Int)?
+    var modifiers: KeyModifiers { KeyModifiers(keys.compactMap(KeyModifiers.init(key:))) }
+  }
+
+  var input = Input()
   var strategy = "normal"
   var pageLoad: Double
   var script: Double? = 30
@@ -351,6 +523,20 @@ struct WDSession {
 
   var timeoutsJSON: [String: Any] {
     ["pageLoad": Int(pageLoad * 1000), "script": script.map { Int($0 * 1000) } ?? NSNull(), "implicit": Int(implicit * 1000)]
+  }
+
+  /// Steps letting go of every held key and button (DELETE actions); the state is cleared.
+  mutating func releaseAll() -> [InputStep] {
+    var steps: [InputStep] = []
+    for k in input.keys.reversed() {
+      input.keys.removeLast()
+      steps.append(InputStep(t: .key, key: k, down: false, mods: input.modifiers.rawValue))
+    }
+    for b in 0...2 where input.buttons & (1 << b) != 0 {
+      steps.append(InputStep(t: .up, x: input.x, y: input.y, button: b, clicks: input.clicks))
+    }
+    input.buttons = 0
+    return steps
   }
 
   mutating func setTimeouts(_ t: [String: Any]) throws {
@@ -367,6 +553,10 @@ struct WDSession {
   }
 }
 
+private func jsonText(_ v: Any) throws -> String {
+  String(decoding: try JSONSerialization.data(withJSONObject: v, options: [.fragmentsAllowed]), as: UTF8.self)
+}
+
 struct WDError: Error {
   let status: Int
   let code: String
@@ -380,15 +570,56 @@ struct WDError: Error {
 
 private let elementKey = "element-6066-11e4-a52e-4f735466cecf"
 
-/// Element handles are `data-wd` attributes stamped on the element; `un` resolves them in arguments,
-/// `ser` stamps returned elements.
-private let executeJS = """
-  const W = '\(elementKey)';
+/// A node's path from the top document (child indexes; 's' enters an open shadow root, 'f' a
+/// same-origin iframe), and back. How an element crosses between the page's world and webkit-cli's.
+private let pathJS = """
+  const pathOf = n => {
+    const steps = [];
+    for (;;) {
+      const p = n.parentNode;
+      if (p) {
+        steps.push([...p.childNodes].indexOf(n));
+        n = p;
+        if (p.nodeType === 11 && p.host) { steps.push('s'); n = p.host; }
+        continue;
+      }
+      if (n.nodeType === 9 && n.defaultView && n.defaultView.frameElement) { steps.push('f'); n = n.defaultView.frameElement; continue; }
+      return steps.reverse();
+    }
+  };
+  const nodeAt = steps => {
+    let n = document;
+    for (const s of steps) {
+      n = s === 's' ? n.shadowRoot : s === 'f' ? n.contentDocument : n.childNodes[s];
+      if (!n) return null;
+    }
+    return n;
+  };
+  """
+
+/// webkit-cli's world: WebDriver handles are ids in its registry (handlesJS), never DOM attributes.
+private let wdHandlesJS = handlesJS + pathJS + """
+  const E = '\(elementKey)';
+  const handleOf = el => ({[E]: stamp(el, 'wd', () => 'w' + Math.random().toString(36).slice(2, 12) + Date.now().toString(36))});
+  const elementOf = v => { const el = live(v[E]); if (!el) throw new Error('WKCLI-STALE'); return el; };
+  const mapDeep = (v, f) => {
+    if (Array.isArray(v)) return v.map(x => mapDeep(x, f));
+    if (v && typeof v === 'object') {
+      const r = f(v);
+      return r !== undefined ? r : Object.fromEntries(Object.entries(v).map(([k, x]) => [k, mapDeep(x, f)]));
+    }
+    return v;
+  };
+  const ser = v => v instanceof Element ? handleOf(v) : v === undefined ? null : v;
+  """
+
+/// The page's world: elements arrive and leave as node paths (pathJS).
+private let executeJS = pathJS + """
   const un = v => {
     if (Array.isArray(v)) return v.map(un);
     if (v && typeof v === 'object') {
-      if (W in v) {
-        const el = document.querySelector('[data-wd="' + v[W] + '"]');
+      if ('__wkPath' in v) {
+        const el = nodeAt(v.__wkPath);
         if (!el) throw new Error('WKCLI-STALE');
         return el;
       }
@@ -396,13 +627,8 @@ private let executeJS = """
     }
     return v;
   };
-  const stamp = el => {
-    let id = el.getAttribute('data-wd');
-    if (!id) { id = 'w' + Math.random().toString(36).slice(2, 12) + Date.now().toString(36); el.setAttribute('data-wd', id); }
-    return { [W]: id };
-  };
   const ser = v => {
-    if (v instanceof Element) return stamp(v);
+    if (v instanceof Element) return {__wkPath: pathOf(v)};
     if (Array.isArray(v) || v instanceof NodeList || v instanceof HTMLCollection) return [...v].map(ser);
     if (v && typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype)
       return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, ser(x)]));
@@ -411,9 +637,9 @@ private let executeJS = """
   /*BODY*/
   """
 
-/// arguments: using, value, firstOnly. Returns the matching elements (ser() turns them into handles).
+/// args: using, value, firstOnly. Returns handles to the matching elements.
 private let findElementsJS = """
-  const [using, value, firstOnly] = arguments;
+  const [using, value, firstOnly] = args;
   let found;
   switch (using) {
     case 'css selector': found = [...document.querySelectorAll(value)]; break;
@@ -428,78 +654,15 @@ private let findElementsJS = """
     }
     default: throw new Error('unsupported locator strategy ' + using);
   }
-  return firstOnly ? found.slice(0, 1) : found;
+  return (firstOnly ? found.slice(0, 1) : found).map(handleOf);
   """
 
-/// Enter on an element: key events, then submit its form as a browser would.
-private let pressEnterJS = """
-  const el = arguments[0];
-  const opts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
-  const go = el.dispatchEvent(new KeyboardEvent('keydown', opts));
-  el.dispatchEvent(new KeyboardEvent('keypress', opts));
-  el.dispatchEvent(new KeyboardEvent('keyup', opts));
-  if (go && el.form && el.tagName !== 'TEXTAREA') {
-    if (el.form.requestSubmit) el.form.requestSubmit(); else el.form.submit();
-  }
-  return null;
-  """
-
-/// W3C actions, tick by tick: key (text into the focused element, Enter submits), pointer (move/down/up
-/// → mouse events and a click at the pointer), wheel (scroll), pause.
-private let actionsJS = """
-  const sequences = arguments[0];
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const pointer = { x: 0, y: 0 };
-  const ticks = Math.max(0, ...sequences.map(s => (s.actions || []).length));
-  const keyName = k => ({ '\\uE007': 'Enter', '\\uE006': 'Enter', '\\uE003': 'Backspace', '\\uE004': 'Tab', '\\uE00C': 'Escape' })[k] || k;
-  const center = el => { const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; };
-  const mouse = (type, target) => target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: pointer.x, clientY: pointer.y, button: 0 }));
-  for (let t = 0; t < ticks; t++) {
-    let wait = 0;
-    for (const s of sequences) {
-      const a = (s.actions || [])[t];
-      if (!a) continue;
-      if (a.type === 'pause') { wait = Math.max(wait, a.duration || 0); continue; }
-      if (s.type === 'key') {
-        const el = document.activeElement || document.body;
-        const key = keyName(a.value);
-        const opts = { key, bubbles: true, cancelable: true };
-        if (a.type === 'keyDown') {
-          const go = el.dispatchEvent(new KeyboardEvent('keydown', opts));
-          if (!go) continue;
-          if (key === 'Enter') {
-            if (el.form && el.tagName !== 'TEXTAREA') { el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit(); }
-          } else if (key === 'Backspace') {
-            if ('value' in el) { el.value = el.value.slice(0, -1); el.dispatchEvent(new Event('input', { bubbles: true })); }
-          } else if (key.length === 1) {
-            if ('value' in el && /^(INPUT|TEXTAREA)$/.test(el.tagName)) { el.value += key; el.dispatchEvent(new Event('input', { bubbles: true })); }
-            else if (el.isContentEditable) { el.textContent += key; el.dispatchEvent(new Event('input', { bubbles: true })); }
-          }
-        } else if (a.type === 'keyUp') {
-          el.dispatchEvent(new KeyboardEvent('keyup', opts));
-          if (key.length === 1 && 'value' in el) el.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-      } else if (s.type === 'pointer') {
-        if (a.type === 'pointerMove') {
-          const o = a.origin;
-          if (o && typeof o === 'object') { const c = center(o); pointer.x = c.x + (a.x || 0); pointer.y = c.y + (a.y || 0); }
-          else if (o === 'pointer') { pointer.x += a.x || 0; pointer.y += a.y || 0; }
-          else { pointer.x = a.x || 0; pointer.y = a.y || 0; }
-          const at = document.elementFromPoint(pointer.x, pointer.y);
-          if (at) mouse('mousemove', at);
-        } else if (a.type === 'pointerDown' || a.type === 'pointerUp') {
-          const at = document.elementFromPoint(pointer.x, pointer.y);
-          if (!at) throw new Error('no element at ' + pointer.x + ',' + pointer.y);
-          if (a.type === 'pointerDown') { mouse('mousedown', at); if (at.focus) at.focus(); }
-          else { mouse('mouseup', at); at.click(); }
-        }
-      } else if (s.type === 'wheel' && a.type === 'scroll') {
-        window.scrollBy(a.deltaX || 0, a.deltaY || 0);
-      }
-    }
-    if (wait) await sleep(wait);
-  }
-  return null;
+/// An element's in-view centre in viewport px, scrolled into view first.
+private let centerJS = """
+  const el = elementOf(args[0]);
+  el.scrollIntoView({block: 'center', inline: 'center'});
+  const r = el.getClientRects()[0] || el.getBoundingClientRect();
+  return {x: r.x + r.width / 2, y: r.y + r.height / 2};
   """
 
 private func listenTCP(_ port: Int) throws -> Int32 {

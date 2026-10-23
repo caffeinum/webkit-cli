@@ -1,7 +1,7 @@
 import Foundation
 
 /// Bumped whenever Request/Response or the set of commands changes; client and session must agree.
-let sessionProtocolVersion = 3
+let sessionProtocolVersion = 4
 
 /// One command for a profile's session. Crosses the unix socket as a JSON line.
 struct Request: Codable {
@@ -26,6 +26,9 @@ struct Request: Codable {
   var json: Bool?
   var interactive: Bool?
   var strategy: String?      // WebDriver pageLoadStrategy for goto/click/nav: normal (nil), eager, none
+  var input: [InputStep]?    // `input`: the events to post; `type`: the keys to press instead of `text`'s
+  var append: Bool?          // `type`: keep the field's content and type after it (WebDriver send keys)
+  var isolated: Bool?        // `eval`: in webkit-cli's isolated world (WebDriver's element handles), not the page's
 }
 
 let defaultHumanTimeout: Double = 600
@@ -147,7 +150,7 @@ final class Engine {
     case "eval":
       guard let js = r.js else { throw CLIError("eval needs javascript") }
       return try await withTarget(r) { tab in
-        if let json = try await tab.evalJSON(js) { return json }
+        if let json = try await tab.evalJSON(js, page: r.isolated != true) { return json }
         if !js.contains("return") {
           self.note("result was undefined — eval runs your code as an async function body, so use `return <value>`")
         }
@@ -168,7 +171,14 @@ final class Engine {
       let (id, tab) = try tab(r.target)
       guard let selector = r.selector else { throw CLIError("click needs a selector") }
       let strategy = try loadStrategy(r)
-      let hit = try await tab.callJS(clickJS, ["selector": selector])
+      var hit = try await tab.callJS(clickJS, ["selector": selector]) as? [String: Any] ?? [:]
+      if let x = (hit.removeValue(forKey: "x") as? NSNumber)?.doubleValue, let y = (hit.removeValue(forKey: "y") as? NSNumber)?.doubleValue {
+        try await tab.send([
+          InputStep(t: .move, x: x, y: y),
+          InputStep(t: .down, x: x, y: y, button: 0, clicks: 1),
+          InputStep(t: .up, x: x, y: y, button: 0, clicks: 1),
+        ])
+      }
       if strategy != "none" {
         // the click is dispatched on the next tick; give a navigation it starts a moment to begin
         try await Task.sleep(nanoseconds: strategy == "eager" ? 200_000_000 : 500_000_000)
@@ -177,14 +187,28 @@ final class Engine {
       try await escalateIfChallenged(id, r, deadline: deadline)
       var info = try await pageInfo(tab)
       info["tab"] = id
-      info["clicked"] = hit ?? NSNull()
+      info["clicked"] = hit
       return try jsonString(info)
     case "type":
       let (id, tab) = try tab(r.target)
-      guard let selector = r.selector, let text = r.text else { throw CLIError("type needs a selector and text") }
-      let field = try await tab.callJS(typeJS, ["selector": selector, "text": text])
+      guard let selector = r.selector, let text = r.text ?? (r.input != nil ? "" : nil) else { throw CLIError("type needs a selector and text") }
+      let append = r.append == true
+      var field = try await tab.callJS(typeJS, ["selector": selector, "text": text, "append": append, "keysOnly": r.input != nil]) as? [String: Any] ?? [:]
+      if field.removeValue(forKey: "keys") as? Bool == true {
+        let filled = field.removeValue(forKey: "filled") as? Bool == true
+        // an input that has no caret position to set (email, number) is retyped whole
+        let retype = field.removeValue(forKey: "retype") as? String ?? ""
+        var steps = keySteps(keysFor(retype)) + (r.input ?? keySteps(keysFor(text)))
+        if steps.isEmpty && filled && !append { steps = keySteps(["Backspace"]) }
+        try await tab.send(steps)
+      }
       try await settle(tab, r.wait, cap: 0)
-      return try jsonString(["tab": id, "typed": field ?? NSNull()] as [String: Any])
+      return try jsonString(["tab": id, "typed": field] as [String: Any])
+    case "input":
+      let (id, tab) = try tab(r.target)
+      guard let steps = r.input else { throw CLIError("input needs events", code: ExitCode.usage) }
+      try await tab.send(steps)
+      return try jsonString(["tab": id, "sent": steps.count] as [String: Any])
     case "wait":
       let (id, tab) = try tab(r.target)
       try await waitFor(id, tab, r, deadline: deadline)
@@ -434,6 +458,10 @@ final class Engine {
     return CLIError("\(r.cmd) timed out after \(Int(r.timeout.rounded(.up)))s\(at) — raise with --timeout", code: ExitCode.timeout)
   }
 
+  private func keySteps(_ keys: [String]) -> [InputStep] {
+    keys.flatMap { [InputStep(t: .key, key: $0, down: true), InputStep(t: .key, key: $0, down: false)] }
+  }
+
   private func loadStrategy(_ r: Request) throws -> String {
     let s = r.strategy ?? "normal"
     guard ["normal", "eager", "none"].contains(s) else {
@@ -560,47 +588,68 @@ private let quietJS = """
   });
   """
 
-private let clickJS = findJS + """
+private let clickJS = findJS + pointAtJS + """
   const el = find(selector);
   if (!el) throw missing(selector);
   reachable(el, selector);
-  el.scrollIntoView({block: 'center'});
-  const r = el.getBoundingClientRect();
-  const at = {bubbles: true, cancelable: true, view: window, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, button: 0};
-  setTimeout(() => {
-    for (const type of ['pointerover', 'pointerenter', 'mouseover', 'pointerdown', 'mousedown'])
-      el.dispatchEvent(type.startsWith('pointer') ? new PointerEvent(type, {...at, pointerType: 'mouse', isPrimary: true}) : new MouseEvent(type, at));
-    if (el.focus) el.focus();
-    for (const type of ['pointerup', 'mouseup'])
-      el.dispatchEvent(type.startsWith('pointer') ? new PointerEvent(type, {...at, pointerType: 'mouse', isPrimary: true}) : new MouseEvent(type, at));
-    el.click();
-  }, 0);
   const said = (el.labels && el.labels.length ? [...el.labels].map(l => l.innerText).join(' ') : '') ||
     el.getAttribute('aria-label') || el.innerText || (el.type === 'checkbox' || el.type === 'radio' ? '' : el.value) || '';
-  return {tag: el.tagName.toLowerCase(), text: said.replace(/\\s+/g, ' ').trim().slice(0, 80)};
+  const info = {tag: el.tagName.toLowerCase(), text: said.replace(/\\s+/g, ' ').trim().slice(0, 80)};
+  // a real click on these opens a native popup that blocks the page (and this process, on mac): synthetic
+  if (el.tagName === 'SELECT' || (el.tagName === 'INPUT' && el.type === 'color')) {
+    el.scrollIntoView({block: 'center'});
+    const r = el.getBoundingClientRect();
+    const at = {bubbles: true, cancelable: true, view: window, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2, button: 0};
+    for (const type of ['mouseover', 'mousedown']) el.dispatchEvent(new MouseEvent(type, at));
+    el.focus();
+    for (const type of ['mouseup', 'click']) el.dispatchEvent(new MouseEvent(type, at));
+    return info;
+  }
+  return {...info, ...pointAt(el, selector)};
   """
 
+/// Text fields get real keystrokes (the caller sends them): this focuses the field and selects its
+/// content (or puts the caret at the end, to append). Other controls get their value set.
 private let typeJS = findJS + """
   const el = find(selector);
   if (!el) throw missing(selector);
   reachable(el, selector);
-  el.focus();
   const win = el.ownerDocument.defaultView; // the element may live in a same-origin iframe
   const tag = el.tagName;
+  const name = el.name || el.id || H.ref.get(el) || null;
+  const typable = tag === 'TEXTAREA' || el.isContentEditable ||
+    (tag === 'INPUT' && ['text', 'search', 'email', 'url', 'tel', 'password', 'number'].includes(el.type));
+  if (typable || keysOnly) {
+    el.focus();
+    if (!typable) return {tag: tag.toLowerCase(), name, keys: true, filled: false};
+    const filled = (el.isContentEditable ? el.textContent : el.value).length > 0;
+    if (el.isContentEditable) {
+      const r = el.ownerDocument.createRange();
+      r.selectNodeContents(el);
+      if (append) r.collapse(false);
+      const sel = win.getSelection();
+      sel.removeAllRanges(); sel.addRange(r);
+      return {tag: tag.toLowerCase(), name, keys: true, filled};
+    }
+    if (!append) { el.select(); return {tag: tag.toLowerCase(), name, keys: true, filled}; }
+    try { el.setSelectionRange(el.value.length, el.value.length); } catch (e) {
+      const was = el.value; el.select();
+      return {tag: tag.toLowerCase(), name, keys: true, filled, retype: was};
+    }
+    return {tag: tag.toLowerCase(), name, keys: true, filled};
+  }
   if (tag === 'SELECT') {
     const want = text.trim().toLowerCase();
     const opt = [...el.options].find(o => (o.label || o.text).trim().toLowerCase() === want) || [...el.options].find(o => o.value === text);
     if (!opt) throw new Error('WKCLI: no option ' + JSON.stringify(text) + ' in ' + selector + ' (options: ' + [...el.options].map(o => o.label || o.text).join(', ') + ')');
     Object.getOwnPropertyDescriptor(win.HTMLSelectElement.prototype, 'value').set.call(el, opt.value);
-  } else if (tag === 'INPUT' || tag === 'TEXTAREA') {
-    const proto = tag === 'INPUT' ? win.HTMLInputElement.prototype : win.HTMLTextAreaElement.prototype;
-    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, text);
-  } else if (el.isContentEditable) {
-    el.textContent = text;
+  } else if (tag === 'INPUT') {
+    Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, 'value').set.call(el, text);
   } else {
     throw new Error('WKCLI: ' + selector + ' is a <' + tag.toLowerCase() + '>, not an input, textarea, select or editable');
   }
+  el.focus();
   el.dispatchEvent(new win.Event('input', {bubbles: true}));
   el.dispatchEvent(new win.Event('change', {bubbles: true}));
-  return {tag: tag.toLowerCase(), name: el.name || el.id || el.getAttribute('data-wk-ref') || null};
+  return {tag: tag.toLowerCase(), name};
   """

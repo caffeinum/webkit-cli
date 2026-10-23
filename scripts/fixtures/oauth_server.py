@@ -191,6 +191,22 @@ crypto.subtle.generateKey({name: 'AES-GCM', length: 128}, false, ['encrypt']).th
   };
 });
 </script>"""))
+        # every input event the page sees, for the trusted-input checks
+        if path == "/input":
+            return self.send(200, page("Input", """<style>#hov:hover{outline:3px solid green}</style>
+<div id=hov style="position:absolute;left:40px;top:120px;width:200px;height:80px;background:#eee">hover me</div>
+<input id=field style="position:absolute;left:40px;top:240px" value="old">
+<textarea id=area style="position:absolute;left:40px;top:290px"></textarea>
+<div id=covered style="position:absolute;left:300px;top:120px;width:100px;height:40px">under</div>
+<div style="position:absolute;left:300px;top:120px;width:100px;height:40px;background:red">over</div>
+<div style="height:3000px"></div>
+<script>
+window.log = [];
+for (const t of ['mouseover', 'mouseenter', 'mousemove', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu', 'keydown', 'keyup', 'input', 'wheel'])
+  document.addEventListener(t, e => log.push({t, trusted: e.isTrusted, detail: e.detail, key: e.key, ctrl: e.ctrlKey, shift: e.shiftKey,
+    meta: e.metaKey, alt: e.altKey, id: e.target.id || e.target.tagName}), true);
+window.hovered = () => document.getElementById('hov').matches(':hover');
+</script>"""))
         # parsed at once, but the load event waits ?s seconds for an image
         if path == "/slow-image":
             return self.send(200, page("Slow image", f'<h1 id=parsed>parsed</h1><img src="/slow?s={q.get("s", 3)}">'))

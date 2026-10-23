@@ -58,6 +58,7 @@ snap=$($B snapshot "$t" $A); r=$(echo "$snap" | ref 'button "Create API key"'); 
 si=$($B snapshot "$t" -i $A)
 [ "$(echo "$si" | ref 'button "Create API key"')" = "$r" ] || fail "snapshot -i: same ref"
 echo "$si" | grep -q "welcome alice" && fail "snapshot -i kept page text"
+[ "$($B eval "$t" "return document.querySelector('[data-wk-ref]') === null" --raw $A)" = true ] || fail "snapshot refs left attributes in the DOM"
 $B click "$t" "$r" $A >/dev/null || fail "click by ref"
 $B eval "$t" --raw --out "$tmp/key" 'return document.querySelector("pre#key").textContent' $A >/dev/null
 grep -Eq '^sk-qa-[0-9a-f]{24}$' "$tmp/key" || fail "key via eval --out --raw"
@@ -96,6 +97,17 @@ set -e
 $B close "$t" $A >/dev/null
 [ "$($B tabs $A)" = "[]" ] || fail "tabs after close"
 ok "one-shot snapshot/shot, timeout=3, text=2, throwaway open=2, close/tabs"
+
+# click and type post real events: the page sees them as trusted, with hover
+t=$($B open "$APP/input" $A | tab)
+$B click "$t" '#hov' $A >/dev/null || fail "click #hov"
+$B type "$t" '#field' 'Hi there!' $A >/dev/null || fail "type #field"
+got=$($B eval "$t" "return [hovered(), field.value, log.filter(e => !e.trusted).length, log.some(e => e.t === 'keydown' && e.key === 'H' && e.shift)].join('|')" --raw $A)
+[ "$got" = "true|Hi there!|0|true" ] || fail "trusted click/type (hover|value|untrusted|shift H): $got"
+set +e; $B click "$t" '#covered' $A 2>"$tmp/covered"; rc=$?; set -e
+[ $rc != 0 ] && grep -q "covered by" "$tmp/covered" || fail "click on a covered element"
+$B close "$t" $A >/dev/null
+ok "trusted click/type (isTrusted, hover, Shift), covered element refused"
 
 # a page that stores a CryptoKey in IndexedDB must not block on the keychain (mac asked it, unanswered)
 t=$($B open "$APP/webcrypto" --timeout 20 $A | tab) || fail "webcrypto page did not load (keychain prompt?)"

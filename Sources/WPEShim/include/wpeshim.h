@@ -47,8 +47,21 @@ const char *wk_tab_title(wk_tab *tab);
 int wk_tab_is_loading(wk_tab *tab);
 const char *wk_tab_user_agent(wk_tab *tab);
 
-/// Runs `body` as an async function with one string argument named `args_name` holding `args_json`.
-void wk_tab_call_js(wk_tab *tab, const char *body, const char *args_name, const char *args_json, void *req, wk_js_done done);
+/// Runs `body` as an async function with one string argument named `args_name` holding `args_json`,
+/// in the page's world (`world` NULL) or an isolated one the page can't see.
+void wk_tab_call_js(wk_tab *tab, const char *body, const char *args_name, const char *args_json, const char *world,
+                    void *req, wk_js_done done);
+
+/// Runs `source` at the start of every top-level document, in the isolated world `world`. A named
+/// world only lasts while something holds it; this also keeps it (and its globals) alive between calls.
+void wk_tab_add_world_script(wk_tab *tab, const char *world, const char *source);
+
+/// Real input events into the tab's view (the page sees them as trusted). x/y: CSS px of the viewport.
+/// kind 0 move, 1 down, 2 up; button 1 left, 2 middle, 3 right; mods: WPEModifiers bits.
+void wk_tab_pointer(wk_tab *tab, int kind, double x, double y, unsigned button, unsigned clicks, unsigned mods);
+void wk_tab_scroll(wk_tab *tab, double x, double y, double dx, double dy, unsigned mods);
+/// keyval: an XKB keysym; the hardware keycode comes from the display's keymap when it has one.
+void wk_tab_key(wk_tab *tab, int down, unsigned keyval, unsigned mods);
 /// Visible viewport → PNG at `path` (mode set by the caller).
 void wk_tab_snapshot_png(wk_tab *tab, const char *path, void *req, wk_snap_done done);
 
