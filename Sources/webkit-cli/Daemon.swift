@@ -21,7 +21,8 @@ private func peerUID(_ fd: Int32) -> uid_t? {
 }
 #else
 let streamSocket = SOCK_STREAM
-private let spawnSetSID = Int16(POSIX_SPAWN_SETSID)
+// only the fds the file actions name reach the session process (the rest stay with the caller)
+private let spawnSetSID = Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT)
 private func newSpawnActions() -> posix_spawn_file_actions_t? { nil }
 private func newSpawnAttr() -> posix_spawnattr_t? { nil }
 func posixConnect(_ fd: Int32, _ addr: UnsafePointer<sockaddr>, _ len: socklen_t) -> Int32 { Darwin.connect(fd, addr, len) }
@@ -209,6 +210,7 @@ final class SessionServer {
       while true {
         let client = accept(fd, nil, nil)
         if client < 0 { continue }
+        closeOnExec(client)
         guard peerUID(client) == getuid() else {
           close(client)
           continue
@@ -424,6 +426,12 @@ struct Note: Codable {
 
 // MARK: sockets
 
+/// Keeps `fd` out of processes we spawn: a session process started by `webdriver` must not inherit
+/// its listening socket (it would race it on accept() and leave clients unanswered).
+func closeOnExec(_ fd: Int32) {
+  _ = fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC)
+}
+
 private func sockaddr(_ path: String) throws -> sockaddr_un {
   var addr = sockaddr_un()
   addr.sun_family = sa_family_t(AF_UNIX)
@@ -441,6 +449,7 @@ private func connect(_ path: String) throws -> Int32 {
   var addr = try sockaddr(path)
   let fd = socket(AF_UNIX, streamSocket, 0)
   guard fd >= 0 else { throw CLIError("socket(): \(String(cString: strerror(errno)))") }
+  closeOnExec(fd)
   let rc = withUnsafePointer(to: &addr) {
     $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { posixConnect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
   }
@@ -456,6 +465,7 @@ private func listenUnix(_ path: String) throws -> Int32 {
   var addr = try sockaddr(path)
   let fd = socket(AF_UNIX, streamSocket, 0)
   guard fd >= 0 else { throw CLIError("socket(): \(String(cString: strerror(errno)))") }
+  closeOnExec(fd)
   let old = umask(0o077)
   defer { umask(old) }
   let rc = withUnsafePointer(to: &addr) {

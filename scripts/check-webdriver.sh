@@ -126,4 +126,9 @@ wait "$WD" && rc=0 || rc=$?
 WD=""
 [ "$rc" = 0 ] || fail "webdriver exited $rc on SIGTERM"
 echo "ok  SIGTERM: exit 0"
+# the session process webdriver started is still running; it must not have inherited the listen socket
+pgrep -f "serve --account $P" >/dev/null || fail "session process gone"
+python3 -c "import socket,sys; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(('127.0.0.1', int(sys.argv[1]))); s.listen()" "$PORT" \
+  || fail "port $PORT still held after webdriver exited (the session process inherited the listen socket)"
+echo "ok  session process didn't inherit the listen socket"
 echo "all webdriver checks passed"

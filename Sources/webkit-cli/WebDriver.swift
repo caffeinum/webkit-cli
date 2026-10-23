@@ -41,6 +41,7 @@ final class WebDriverServer {
     while true {
       let client = accept(fd, nil, nil)
       if client < 0 { continue }
+      closeOnExec(client)
       noSigpipe(client)
       Thread.detachNewThread { [self] in handle(client) }
     }
@@ -449,6 +450,7 @@ private let actionsJS = """
 private func listenTCP(_ port: Int) throws -> Int32 {
   let fd = socket(AF_INET, streamSocket, 0)
   guard fd >= 0 else { throw CLIError("socket(): \(String(cString: strerror(errno)))") }
+  closeOnExec(fd)
   var on: Int32 = 1
   setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, socklen_t(MemoryLayout<Int32>.size))
   var addr = sockaddr_in()
