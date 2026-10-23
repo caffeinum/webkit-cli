@@ -1,7 +1,7 @@
 import Foundation
 
 /// Bumped with each release tag (vX.Y.Z).
-let webkitCLIVersion = "0.2.2"
+let webkitCLIVersion = "0.3.0"
 
 let helpText = """
   webkit-cli — drive the system WebKit headless, with persistent logged-in profiles.
@@ -61,8 +61,9 @@ let helpText = """
   FLAGS
     -a, --account <name>    use a separate profile (letters, digits, . _ - @); `-` = throwaway,
                             in memory, one-shot only. Named profiles are created by `auth`.
-    --wait <sec>            settle time after a load/click (default: open/goto/one-shot 3,
-                            click 1, others 0)
+    --wait <sec>            fixed settle time after a load/click; by default open/goto/one-shot
+                            wait until the page is quiet (no new requests or DOM changes for
+                            0.5s, at most 3s), click at most 1s, others don't wait
     --timeout <sec>         give up after this long, exit 3 (default 60; `auth` never times out)
     --until-url <regex>     `wait` until the tab's URL matches
     --until-selector <css>  `wait` until an element matching <css> exists
@@ -71,6 +72,7 @@ let helpText = """
     --human-timeout <sec>   with --escalate or wait --until-hidden: how long to wait for the person
                             (default 600, then exit 3); time a tab is shown for a person doesn't
                             count toward --timeout
+    -i, --interactive       `snapshot`: only what can be acted on (refs, no text/headings/hrefs)
     --json                  `snapshot` as JSON: {title, url, truncated, nodes: [{ref?, role, name, …}]}
     --redact                `snapshot`: mask secret-looking values as ‹redacted len=N #sha8›
                             (password inputs are never shown either way)
@@ -139,6 +141,7 @@ struct Options {
   var humanTimeout: Double?
   var json = false
   var redact = false
+  var interactive = false
   var maxChars: Int?
 }
 
@@ -161,8 +164,9 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
     switch a {
     case "-h", "--help": return (.help, opts)
     case "--version": return (.version, opts)
-    case "--raw", "--until-hidden", "--escalate", "--json", "--redact":
+    case "--raw", "--until-hidden", "--escalate", "--json", "--redact", "-i", "--interactive":
       switch a {
+      case "-i", "--interactive": opts.interactive = true
       case "--raw": opts.raw = true
       case "--until-hidden": opts.untilHidden = true
       case "--escalate": opts.escalate = true
@@ -211,7 +215,8 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
       untilURL: opts.untilURL, untilSelector: opts.untilSelector, wait: opts.wait, timeout: opts.timeout,
       untilHidden: opts.untilHidden ? true : nil, escalate: opts.escalate ? true : nil,
       challengeURLs: opts.challengeURLs.isEmpty ? nil : opts.challengeURLs, humanTimeout: opts.humanTimeout,
-      redact: opts.redact ? true : nil, maxChars: opts.maxChars, json: opts.json ? true : nil))
+      redact: opts.redact ? true : nil, maxChars: opts.maxChars, json: opts.json ? true : nil,
+      interactive: opts.interactive ? true : nil))
   }
   func tabOrURL(_ s: String) throws -> String { isTabID(s) ? s : try parseURL(s).absoluteString }
   func tabID(_ s: String) throws -> String {
@@ -277,7 +282,7 @@ func parseArguments(_ args: [String]) throws -> (Command, Options) {
   case "text":
     throw CLIError("text was removed — use `snapshot`, or `eval <tab> 'return document.body.innerText'` for raw text", code: ExitCode.usage)
   case "snapshot":
-    try need(1, "snapshot <tab|url> [--json] [--redact] [--max-chars N]")
+    try need(1, "snapshot <tab|url> [-i] [--json] [--redact] [--max-chars N]")
     return (session("snapshot", target: try tabOrURL(rest[0])), opts)
   case "eval":
     try need(2, "eval <tab|url> '<js>'")

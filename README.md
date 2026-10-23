@@ -71,6 +71,7 @@ webkit-cli type <tab> <selector> <text> set an input's value (React-safe); the t
 webkit-cli wait <tab> [--until-url <regex>] [--until-selector <css>]
 webkit-cli goto <tab> <url>             navigate an open tab
 webkit-cli snapshot <tab|url>           what's on the page: text, headings, and every action with a ref
+webkit-cli snapshot <tab|url> -i        only the actions with refs (fewest tokens)
 webkit-cli eval <tab|url> '<js>'        JS as an async function body → JSON result
 webkit-cli shot <tab|url> <out.png>     1280×800 viewport screenshot (2× on Retina, mode 0600)
 webkit-cli tabs                         open tabs; popups show up as their own tabs
@@ -83,7 +84,8 @@ webkit-cli forget <account>             delete a profile and all its website dat
 webkit-cli doctor                       check that headless pages really render
 
 -a, --account <name>    a separate profile instead of the default; `-` = throwaway (one-shot only)
---wait <sec>            settle time after a load/click (open/goto/one-shot 3, click 1, others 0)
+--wait <sec>            fixed settle after a load/click; default: wait until the page is quiet
+                        (0.5s without new requests or DOM changes), at most 3s (click 1s)
 --timeout <sec>         give up and exit 3 (default 60, counted from when the command reaches the session)
 --until-url / --until-selector   conditions for `wait`
 --out <file>            write eval/snapshot output to a 0600 file, print only {"written","bytes"}

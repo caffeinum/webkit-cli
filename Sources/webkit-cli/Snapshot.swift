@@ -72,7 +72,7 @@ let findJS = """
   };
   """
 
-/// Arguments: startRef (Int), redactOn (Bool), maxChars (Int), asJSON (Bool).
+/// Arguments: startRef (Int), redactOn (Bool), maxChars (Int), asJSON (Bool), interactive (Bool: actions only).
 /// Returns {output, nextRef, truncated}.
 let snapshotJS = #"""
   // --- SHA-256, so a masked secret can be told apart from another without leaving the page
@@ -317,7 +317,7 @@ let snapshotJS = #"""
   walk(document.body || document.documentElement, top);
   // modal dialogs first, then the page, then non-modal dialogs. While a modal is open the page behind it
   // can't be used, so it collapses to one line (its refs stay stamped and work again once it closes).
-  const page = modalEl ? [{ kind: 'text', text: `[${behindCount} elements behind the modal dialog]`, row: true }] : top;
+  const page = modalEl ? [{ kind: 'text', text: `[${behindCount} elements behind the modal dialog]`, row: true, keep: true }] : top;
   const roots = [...dialogs.filter(d => d.modal), ...page, ...dialogs.filter(d => !d.modal)];
 
   // merge adjacent text lines inside a parent (keeps output compact)
@@ -333,7 +333,16 @@ let snapshotJS = #"""
     }
     return out;
   };
-  const tree = merge(roots);
+  // -i: only what can be acted on, flat; dialogs stay as groups so a modal's controls read as its own
+  const pick = (list, out) => {
+    for (const n of list) {
+      if (n.kind === 'action' || n.kind === 'xframe' || n.keep) { if (n.kind === 'action') delete n.href; out.push(n); }
+      else if (n.kind === 'group' && n.label === 'dialog') { const d = { ...n, children: pick(n.children, []) }; if (d.children.length) out.push(d); }
+      else if (n.children) pick(n.children, out);
+    }
+    return out;
+  };
+  const tree = interactive ? pick(merge(roots), []) : merge(roots);
 
   // --- lines with priorities: dialog 0 (never cut), actions/headings/groups 1, text 2
   const q = (s) => JSON.stringify(s);

@@ -55,6 +55,9 @@ ok "redirect sign-in across origins (open/click/type/wait/snapshot)"
 # refs: act by ref, stable across snapshots, stale after navigation
 snap=$($B snapshot "$t" $A); r=$(echo "$snap" | ref 'button "Create API key"'); [ -n "$r" ] || fail "no ref for Create API key"
 [ "$($B snapshot "$t" $A | ref 'button "Create API key"')" = "$r" ] || fail "ref changed between snapshots"
+si=$($B snapshot "$t" -i $A)
+[ "$(echo "$si" | ref 'button "Create API key"')" = "$r" ] || fail "snapshot -i: same ref"
+echo "$si" | grep -q "welcome alice" && fail "snapshot -i kept page text"
 $B click "$t" "$r" $A >/dev/null || fail "click by ref"
 $B eval "$t" --raw --out "$tmp/key" 'return document.querySelector("pre#key").textContent' $A >/dev/null
 grep -Eq '^sk-qa-[0-9a-f]{24}$' "$tmp/key" || fail "key via eval --out --raw"

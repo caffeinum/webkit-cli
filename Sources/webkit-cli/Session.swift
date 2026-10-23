@@ -20,6 +20,7 @@ struct Request: Codable {
   var redact: Bool?
   var maxChars: Int?
   var json: Bool?
+  var interactive: Bool?
 }
 
 let defaultHumanTimeout: Double = 600
@@ -101,14 +102,14 @@ final class Engine {
         closeTab(id)
         throw error
       }
-      try await settle(r.wait ?? 3)
+      try await settle(tab, r.wait, cap: 3)
       var info = try await pageInfo(tab)
       if keepsTabs { info["tab"] = id } else { closeTab(id) }
       return try jsonString(info)
     case "goto":
       let (id, tab) = try tab(r.target)
       try await tab.load(try requireURL(r.url))
-      try await settle(r.wait ?? 3)
+      try await settle(tab, r.wait, cap: 3)
       try await escalateIfChallenged(id, r, deadline: deadline)
       var info = try await pageInfo(tab)
       info["tab"] = id
@@ -130,6 +131,7 @@ final class Engine {
       return try await withTarget(r) { tab in
         let result = try await tab.callJS(snapshotJS, [
           "startRef": tab.nextRef, "redactOn": r.redact == true, "maxChars": r.maxChars ?? 8000, "asJSON": r.json == true,
+          "interactive": r.interactive == true,
         ]) as? [String: Any]
         guard let result, let output = result["output"] as? String, let next = result["nextRef"] as? Int else {
           throw CLIError("snapshot returned nothing")
@@ -164,7 +166,7 @@ final class Engine {
       // the click is dispatched on the next tick; give a navigation it starts a moment to begin
       try await Task.sleep(nanoseconds: 500_000_000)
       guard try await tab.waitUntilIdle(until: { deadline.expired }) else { throw timeoutError(r) }
-      try await settle(r.wait ?? 1)
+      try await settle(tab, r.wait, cap: 1)
       try await escalateIfChallenged(id, r, deadline: deadline)
       var info = try await pageInfo(tab)
       info["tab"] = id
@@ -174,12 +176,12 @@ final class Engine {
       let (id, tab) = try tab(r.target)
       guard let selector = r.selector, let text = r.text else { throw CLIError("type needs a selector and text") }
       let field = try await tab.callJS(typeJS, ["selector": selector, "text": text])
-      try await settle(r.wait ?? 0)
+      try await settle(tab, r.wait, cap: 0)
       return try jsonString(["tab": id, "typed": field ?? NSNull()] as [String: Any])
     case "wait":
       let (id, tab) = try tab(r.target)
       try await waitFor(id, tab, r, deadline: deadline)
-      try await settle(r.wait ?? 0)
+      try await settle(tab, r.wait, cap: 0)
       var info = try await pageInfo(tab)
       info["tab"] = id
       return try jsonString(info)
@@ -264,7 +266,7 @@ final class Engine {
     let (id, tab) = try newTab()
     defer { closeTab(id) }
     try await tab.load(try requireURL(target))
-    try await settle(r.wait ?? 3)
+    try await settle(tab, r.wait, cap: 3)
     return try await body(tab)
   }
 
@@ -385,8 +387,22 @@ final class Engine {
     return CLIError("\(r.cmd) timed out after \(Int(r.timeout.rounded(.up)))s\(at) — raise with --timeout", code: ExitCode.timeout)
   }
 
-  private func settle(_ seconds: Double) async throws {
-    if seconds > 0 { try await Task.sleep(nanoseconds: UInt64(seconds * 1e9)) }
+  /// --wait sleeps that long; without it, waits until the page is quiet, at most `cap` seconds.
+  private func settle(_ tab: Browser, _ fixed: Double?, cap: Double) async throws {
+    if let fixed {
+      if fixed > 0 { try await Task.sleep(nanoseconds: UInt64(fixed * 1e9)) }
+      return
+    }
+    guard cap > 0 else { return }
+    let until = Date().addingTimeInterval(cap)
+    while Date() < until {
+      _ = try await tab.waitUntilIdle(until: { Date() >= until })
+      let left = until.timeIntervalSinceNow
+      guard left > 0 else { return }
+      // a navigation that starts mid-wait replaces the page and fails the call; wait for the new page then
+      if (try? await tab.callJS(quietJS, ["quietMs": 500, "capMs": left * 1000])) != nil { return }
+      try await Task.sleep(nanoseconds: 100_000_000)
+    }
   }
 
   private func requireURL(_ s: String?) throws -> URL {
@@ -414,6 +430,25 @@ func writePNG(_ data: Data, to url: URL) throws {
     throw CLIError("could not write \(url.path)")
   }
 }
+
+/// Resolves once no resource has finished loading and the DOM hasn't changed for quietMs, or after capMs.
+private let quietJS = """
+  return await new Promise(resolve => {
+    const start = performance.now();
+    let last = start;
+    const bump = () => { last = performance.now(); };
+    const mo = new MutationObserver(bump);
+    mo.observe(document, {subtree: true, childList: true, characterData: true});
+    let po = null;
+    try { po = new PerformanceObserver(bump); po.observe({type: 'resource'}); } catch (e) {}
+    const iv = setInterval(() => {
+      const now = performance.now();
+      if (now - last < quietMs && now - start < capMs) return;
+      clearInterval(iv); mo.disconnect(); if (po) po.disconnect();
+      resolve(Math.round(now - start));
+    }, 50);
+  });
+  """
 
 private let clickJS = findJS + """
   const el = find(selector);
