@@ -1,7 +1,7 @@
 import Foundation
 
 /// Bumped whenever Request/Response or the set of commands changes; client and session must agree.
-let sessionProtocolVersion = 4
+let sessionProtocolVersion = 5
 
 /// One command for a profile's session. Crosses the unix socket as a JSON line.
 struct Request: Codable {
@@ -198,16 +198,16 @@ final class Engine {
         let filled = field.removeValue(forKey: "filled") as? Bool == true
         // an input that has no caret position to set (email, number) is retyped whole
         let retype = field.removeValue(forKey: "retype") as? String ?? ""
-        var steps = keySteps(keysFor(retype)) + (r.input ?? keySteps(keysFor(text)))
+        var steps = typingSteps(retype) + (r.input ?? typingSteps(text))
         if steps.isEmpty && filled && !append { steps = keySteps(["Backspace"]) }
-        try await tab.send(steps)
+        try await tab.send(steps, until: { deadline.expired })
       }
       try await settle(tab, r.wait, cap: 0)
       return try jsonString(["tab": id, "typed": field] as [String: Any])
     case "input":
       let (id, tab) = try tab(r.target)
       guard let steps = r.input else { throw CLIError("input needs events", code: ExitCode.usage) }
-      try await tab.send(steps)
+      try await tab.send(steps, until: { deadline.expired })
       return try jsonString(["tab": id, "sent": steps.count] as [String: Any])
     case "wait":
       let (id, tab) = try tab(r.target)

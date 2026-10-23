@@ -1,7 +1,7 @@
 import Foundation
 
 /// Bumped with each release tag (vX.Y.Z).
-let webkitCLIVersion = "0.6.0"
+let webkitCLIVersion = "0.7.0"
 
 let helpText = """
   webkit-cli — drive the system WebKit headless, with persistent logged-in profiles.

@@ -14,10 +14,12 @@ private typealias SendEvent = @convention(c) (AnyObject, Selector, NSEvent) -> V
 private let afterMouseSel = NSSelectorFromString("_doAfterProcessingAllPendingMouseEvents:")
 private let afterKeysSel = NSSelectorFromString("_doAfterProcessingAllPendingKeyEvents:")
 private let simulateMoveSel = NSSelectorFromString("_simulateMouseMove:")
+private typealias InsertText = @convention(c) (AnyObject, Selector, AnyObject, NSRange) -> Void
+private let insertTextSel = NSSelectorFromString("insertText:replacementRange:")
 
 /// The private WKWebView hooks trusted input relies on; missing ones fail loudly at tab creation.
 func requireInputSPI(_ web: WKWebView) throws {
-  for sel in [afterMouseSel, afterKeysSel, simulateMoveSel] where !web.responds(to: sel) {
+  for sel in [afterMouseSel, afterKeysSel, simulateMoveSel, insertTextSel] where !web.responds(to: sel) {
     throw CLIError("WKWebView no longer implements the private \(NSStringFromSelector(sel)) (macOS update?); trusted input can't work, so refusing to run.")
   }
 }
@@ -87,10 +89,16 @@ extension Browser {
     window.sendEvent(e)
   }
 
+  /// Text committed at the caret the way an input method commits it (NSTextInputClient), outside
+  /// any key event: the page gets one trusted beforeinput/input with inputType insertText.
+  func insertText(_ text: String) throws {
+    unsafeBitCast(web.method(for: insertTextSel), to: InsertText.self)(web, insertTextSel, text as NSString, NSRange(location: NSNotFound, length: 0))
+  }
+
   func inputMark() async -> [String: Int] { [:] }
 
   /// Resolves once WebKit has handed every queued mouse and key event to the page.
-  func inputSettled(last _: String, since _: [String: Int]) async {
+  func inputSettled(sent _: [String: Int], since _: [String: Int]) async {
     await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
       let afterMouse = unsafeBitCast(web.method(for: afterMouseSel), to: DoAfter.self)
       let afterKeys = unsafeBitCast(web.method(for: afterKeysSel), to: DoAfter.self)

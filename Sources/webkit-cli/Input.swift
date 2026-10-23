@@ -26,7 +26,7 @@ struct KeyModifiers: OptionSet, Codable {
 
 /// One step of an `input` request (WebDriver actions, already resolved to viewport points).
 struct InputStep: Codable {
-  enum Kind: String, Codable { case move, down, up, key, wheel, pause }
+  enum Kind: String, Codable { case move, down, up, key, wheel, pause, text }
   var t: Kind
   var x: Double?
   var y: Double?
@@ -39,35 +39,82 @@ struct InputStep: Codable {
   var ms: Double?
   var mods: Int?
   var buttons: Int?    // buttons held during a move (bit 1 << button), so a held move is a drag
+  var text: String?    // `text`: inserted in one go at the caret, as an input method commits it
 
   var modifiers: KeyModifiers { KeyModifiers(rawValue: mods ?? 0) }
 }
 
 extension Browser {
-  /// Posts the steps in order and returns once the page has received them all.
-  func send(_ steps: [InputStep]) async throws {
-    let mark = await inputMark()
-    var last: String?
+  /// Posts the steps in order and returns once the page has received them all. Stops between
+  /// batches once `stop` says so (a timed-out request), so no typing carries on behind its back.
+  func send(_ steps: [InputStep], until stop: () -> Bool = { false }) async throws {
+    var mark = await inputMark()
+    var sent: [String: Int] = [:] // DOM event type → events posted since `mark`
+    let flush = {
+      if !sent.isEmpty { await self.inputSettled(sent: sent, since: mark); mark = await self.inputMark() }
+      sent = [:]
+    }
     for s in steps {
+      if sent.values.reduce(0, +) >= inputBatch { await flush() }
+      if sent.isEmpty, stop() { throw CLIError("input stopped: the request timed out", code: ExitCode.timeout) }
       switch s.t {
       case .pause:
         try await Task.sleep(nanoseconds: UInt64(max(0, s.ms ?? 0) * 1e6))
       case .move, .down, .up:
         guard let x = s.x, let y = s.y else { throw CLIError("a pointer step needs x and y", code: ExitCode.usage) }
         try pointer(s.t, x: x, y: y, button: s.button ?? 0, clicks: s.clicks ?? 1, modifiers: s.modifiers, buttons: s.buttons ?? 0)
-        last = ["move": "mousemove", "down": "mousedown", "up": "mouseup"][s.t.rawValue]
+        sent[["move": "mousemove", "down": "mousedown", "up": "mouseup"][s.t.rawValue]!, default: 0] += 1
       case .key:
         guard let key = s.key, let down = s.down else { throw CLIError("a key step needs key and down", code: ExitCode.usage) }
         try self.key(s.modifiers.contains(.shift) ? shifted(key) : key, down: down, modifiers: s.modifiers)
-        last = down ? "keydown" : "keyup"
+        sent[down ? "keydown" : "keyup", default: 0] += 1
       case .wheel:
         guard let x = s.x, let y = s.y else { throw CLIError("a wheel step needs x and y", code: ExitCode.usage) }
         try wheel(x: x, y: y, dx: s.dx ?? 0, dy: s.dy ?? 0, modifiers: s.modifiers)
-        last = "wheel"
+        sent["wheel", default: 0] += 1
+      case .text:
+        guard let text = s.text else { throw CLIError("a text step needs text", code: ExitCode.usage) }
+        await flush() // queued keys would land after the text
+        try insertText(text)
+        _ = try await callJS("return 0") // the page handles its messages in order: this one comes after the text
+        mark = await inputMark()
       }
     }
-    if let last { await inputSettled(last: last, since: mark) }
+    await flush()
   }
+}
+
+/// Events posted before waiting for the page to catch up (and checking for a timeout).
+private let inputBatch = 32
+
+/// A run of plain characters at least this long is inserted in one go instead of key by key:
+/// thousands of keystrokes take seconds, an insertion is one trusted beforeinput/input pair.
+let insertTextMin = 64
+
+/// Typing `text` (no modifiers held): key by key, except that long runs of plain characters are
+/// inserted in one go (line breaks and tabs between them stay keys).
+func typingSteps(_ text: String) -> [InputStep] {
+  var steps: [InputStep] = []
+  var run = ""
+  let flush = {
+    if run.count >= insertTextMin {
+      steps.append(InputStep(t: .text, text: run))
+    } else {
+      steps += keysFor(run).flatMap { [InputStep(t: .key, key: $0, down: true), InputStep(t: .key, key: $0, down: false)] }
+    }
+    run = ""
+  }
+  for c in text {
+    if c.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) {
+      flush()
+      run = String(c)
+      flush()
+    } else {
+      run.append(c)
+    }
+  }
+  flush()
+  return steps
 }
 
 /// WebDriver's special keys (U+E000…) as W3C key values; nil for a code point that isn't one.

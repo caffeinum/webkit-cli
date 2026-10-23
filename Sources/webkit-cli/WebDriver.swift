@@ -275,10 +275,14 @@ final class WebDriverServer {
     var held: [String] = []
     var steps: [InputStep] = []
     let mods = { KeyModifiers(held.compactMap(KeyModifiers.init(key:))) }
+    var plain = "" // typed while no modifier is held: long runs go in as one insertion
+    let typePlain = { steps += typingSteps(plain); plain = "" }
     let release = {
       for k in held.reversed() { held.removeLast(); steps.append(InputStep(t: .key, key: k, down: false, mods: mods().rawValue)) }
     }
     for scalar in text.unicodeScalars {
+      if held.isEmpty && !(0xE000...0xF8FF).contains(scalar.value) { plain.unicodeScalars.append(scalar); continue }
+      typePlain()
       if scalar.value == 0xE000 { release(); continue }
       if (0xE000...0xF8FF).contains(scalar.value) && webDriverKeyName(scalar) == nil {
         throw WDError(400, "invalid argument", "unknown WebDriver key U+\(String(scalar.value, radix: 16, uppercase: true))")
@@ -297,6 +301,7 @@ final class WebDriverServer {
       steps.append(InputStep(t: .key, key: key, down: true, mods: mods().rawValue))
       steps.append(InputStep(t: .key, key: key, down: false, mods: mods().rawValue))
     }
+    typePlain()
     release()
     _ = try call(Request(cmd: "type", target: sid, selector: selector, timeout: timeout, input: steps, append: true))
     if steps.contains(where: { $0.key == "Enter" }) {

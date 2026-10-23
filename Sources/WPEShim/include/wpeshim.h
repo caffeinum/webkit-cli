@@ -62,6 +62,7 @@ void wk_tab_pointer(wk_tab *tab, int kind, double x, double y, unsigned button, 
 void wk_tab_scroll(wk_tab *tab, double x, double y, double dx, double dy, unsigned mods);
 /// keyval: an XKB keysym; the hardware keycode comes from the display's keymap when it has one.
 void wk_tab_key(wk_tab *tab, int down, unsigned keyval, unsigned mods);
+void wk_tab_insert_text(wk_tab *tab, const char *text);
 /// Visible viewport → PNG at `path` (mode set by the caller).
 void wk_tab_snapshot_png(wk_tab *tab, const char *path, void *req, wk_snap_done done);
 

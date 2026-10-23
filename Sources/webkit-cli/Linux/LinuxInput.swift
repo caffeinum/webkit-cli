@@ -45,18 +45,23 @@ extension Browser {
     wk_tab_key(try inputTab(), down ? 1 : 0, keyval, mods.wpe)
   }
 
+  func insertText(_ text: String) throws {
+    wk_tab_insert_text(try inputTab(), text)
+  }
+
   func inputMark() async -> [String: Int] {
     (try? await callJS(countJS)) as? [String: Int] ?? [:]
   }
 
-  /// Waits until the page has received the last event sent (its type `last`) after `mark`.
+  /// Waits until the page has received the events sent after `mark` (`sent`: count per type).
+  /// WebKit coalesces mouse moves and wheel events, so of those any one will do.
   /// A navigation replaces the world and its counts: the events reached the old page, so that's settled too.
-  func inputSettled(last: String, since mark: [String: Int]) async {
+  func inputSettled(sent: [String: Int], since mark: [String: Int]) async {
     let until = Date().addingTimeInterval(2)
     while Date() < until {
       guard let seen = try? await callJS(countJS) as? [String: Int] else { return }
       if seen["doc"] != mark["doc"] { return } // a new document
-      if seen[last, default: 0] > mark[last, default: 0] { return }
+      if sent.allSatisfy({ t, n in seen[t, default: 0] - mark[t, default: 0] >= (["mousemove", "wheel"].contains(t) ? 1 : n) }) { return }
       try? await Task.sleep(nanoseconds: 10_000_000)
     }
   }

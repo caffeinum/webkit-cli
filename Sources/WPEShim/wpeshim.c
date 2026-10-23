@@ -261,6 +261,11 @@ void wk_tab_key(wk_tab *t, int down, unsigned keyval, unsigned mods) {
   wpe_event_unref(e);
 }
 
+// the text an input method would commit, at the caret (one trusted beforeinput/input insertText)
+void wk_tab_insert_text(wk_tab *t, const char *text) {
+  webkit_web_view_execute_editing_command_with_argument(t->view, "InsertText", text);
+}
+
 // --- snapshots
 
 typedef struct { void *req; wk_snap_done done; char *path; } snap_call;

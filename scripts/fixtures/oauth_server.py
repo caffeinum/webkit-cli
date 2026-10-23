@@ -202,9 +202,9 @@ crypto.subtle.generateKey({name: 'AES-GCM', length: 128}, false, ['encrypt']).th
 <div style="height:3000px"></div>
 <script>
 window.log = [];
-for (const t of ['mouseover', 'mouseenter', 'mousemove', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu', 'keydown', 'keyup', 'input', 'wheel'])
+for (const t of ['mouseover', 'mouseenter', 'mousemove', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu', 'keydown', 'keyup', 'beforeinput', 'input', 'wheel'])
   document.addEventListener(t, e => log.push({t, trusted: e.isTrusted, detail: e.detail, key: e.key, ctrl: e.ctrlKey, shift: e.shiftKey,
-    meta: e.metaKey, alt: e.altKey, id: e.target.id || e.target.tagName}), true);
+    meta: e.metaKey, alt: e.altKey, inputType: e.inputType, id: e.target.id || e.target.tagName}), true);
 window.hovered = () => document.getElementById('hov').matches(':hover');
 </script>"""))
         # parsed at once, but the load event waits ?s seconds for an image

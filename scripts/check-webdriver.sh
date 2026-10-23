@@ -33,6 +33,8 @@ import json, os, socket, sys, urllib.request, urllib.error, base64
 port, profile = sys.argv[1], sys.argv[2]
 APP, IDP = "http://127.0.0.1:18765", "http://127.0.0.1:18766"
 E = "element-6066-11e4-a52e-4f735466cecf"
+import re
+PROTOCOL = int(re.search(r"sessionProtocolVersion = (\d+)", open("Sources/webkit-cli/Session.swift").read()).group(1))
 def req(method, path, body=None, expect=200):
     data = json.dumps(body).encode() if body is not None else None
     r = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=data, method=method,
@@ -170,6 +172,28 @@ check(ka and ka[-1]["ctrl"], f"Control held through key actions: {ka}")
 req("POST", f"{S2}/element/{field}/clear", {})
 req("POST", f"{S2}/element/{field}/value", {"text": "ab\ue008cd\ue000e1"})
 check(js("return field.value") == "abCDe1", "send keys: Shift held until Null")
+area = req("POST", f"{S2}/element", {"using": "css selector", "value": "#area"})[E]
+long = "".join(chr(97 + i % 26) for i in range(12000))
+js("log.length = 0")
+took = timed(lambda: req("POST", f"{S2}/element/{area}/value", {"text": long + "\n" + "end"}))
+check(js("return area.value") == long + "\nend", "long send keys: the whole text arrives")
+check(took < 3, f"long send keys is one insertion, not 12000 keystrokes: {took:.2f}s")
+ins = [e for e in js("return log") if e["t"] in ("beforeinput", "input") and e["inputType"] == "insertText"]
+check(len(ins) >= 2 and all(e["trusted"] for e in ins), f"insertion fires trusted beforeinput/input insertText: {ins[:4]}")
+check(sum(e["t"] == "keydown" for e in js("return log")) == 4, "short runs and line breaks stay keystrokes")
+# a timed-out input request stops: the keys it hadn't sent yet are dropped, not typed later
+req("POST", f"{S2}/element/{area}/clear", {})
+req("POST", f"{S2}/element/{area}/click", {})
+sock = socket.socket(socket.AF_UNIX); sock.connect(os.path.expanduser(f"~/.config/webkit-cli/run/{profile}.sock"))
+steps = [{"t": "key", "key": "x", "down": d} for _ in range(4000) for d in (True, False)]
+sock.sendall(json.dumps({"v": PROTOCOL, "cmd": "input", "target": s2["sessionId"], "timeout": 0.5, "input": steps}).encode() + b"\n")
+answer = json.loads(sock.makefile().readline())
+check(not answer["ok"] and "timed out" in answer["error"], f"input times out: {answer}")
+time.sleep(0.5)
+n = js("return area.value.length")
+time.sleep(1)
+check(js("return area.value.length") == n < 4000, f"typing stops with its timed-out request ({n} chars)")
+ok(f"long send keys: 12000 chars inserted in {took:.2f}s; a timed-out input stopped at {n} of 4000 keys")
 act({"type": "wheel", "id": "w", "actions": [{"type": "scroll", "x": 100, "y": 100, "deltaX": 0, "deltaY": 400}]})
 for _ in range(20):
     if js("return scrollY") > 0: break
